@@ -14,6 +14,17 @@ define Device/8devices_kiwi-dvk
 endef
 TARGET_DEVICES += 8devices_kiwi-dvk
 
+define Device/linksys_mbe7000
+	$(call Device/FitImage)
+	$(call Device/EmmcImage)
+	DEVICE_VENDOR := Linksys
+	DEVICE_MODEL := MBE7000
+	DEVICE_DTS_CONFIG := config@mbe7000
+	SOC := ipq9574
+	DEVICE_PACKAGES := kmod-ath12k
+endef
+TARGET_DEVICES += linksys_mbe7000
+
 define Device/qcom_rdp433
 	$(call Device/FitImageLzma)
 	DEVICE_VENDOR := Qualcomm Technologies, Inc.

@@ -1,0 +1,615 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include "ipq9574.dtsi"
+
+#include <dt-bindings/clock/qcom,qca8k-nsscc.h>
+#include <dt-bindings/net/qcom,qca808x.h>
+#include <dt-bindings/reset/qcom,qca8k-nsscc.h>
+
+/*
+ * Board data derived from decompiling the FIT-embedded device tree of the
+ * vendor firmware (Linksys MBE7000_1.0.10.215314), which ships the
+ * near-stock Qualcomm IPQ9574/AP-AL02-C4 reference platform DT (model =
+ * "Qualcomm Technologies, Inc. IPQ9574/AP-AL02-C4"). Storage, console,
+ * button GPIOs and PCIe wifi slot usage below come directly from that
+ * dump. No gpio-leds nodes exist anywhere in the vendor kernel DT -
+ * LEDs are presumably driven by the onboard NXP K32W061 (Zigbee/Thread
+ * coprocessor on UART4, gpio50-53, reset gpio31, isp gpio57 - not wired
+ * up here) or another out-of-kernel mechanism, so none are defined yet.
+ * Ethernet is 4 LAN (qca8084-style switch package, matching the vendor
+ * dump's mdio addresses 0x10-0x13) + 1 WAN via a discrete PHY (raw mdio
+ * address 0x1c), mirroring how qcom_rdp433 wires its own discrete-PHY
+ * port6/wan over pcs2/UNIPHY2 - confirmed by the vendor dts's
+ * "uniphy2_port6_*" clock names. The discrete WAN PHY's exact
+ * compatible/nvmem is still unconfirmed, see note near phy4 below.
+ */
+
+/ {
+	model = "Linksys MBE7000";
+	compatible = "linksys,mbe7000", "qcom,ipq9574";
+
+	aliases {
+		serial0 = &blsp1_uart2;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	regulator_fixed_3p3: s3300 {
+		compatible = "regulator-fixed";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-boot-on;
+		regulator-always-on;
+		regulator-name = "fixed_3p3";
+	};
+
+	regulator_fixed_0p925: s0925 {
+		compatible = "regulator-fixed";
+		regulator-min-microvolt = <925000>;
+		regulator-max-microvolt = <925000>;
+		regulator-boot-on;
+		regulator-always-on;
+		regulator-name = "fixed_0p925";
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-0 = <&gpio_keys_default>;
+		pinctrl-names = "default";
+
+		reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&tlmm 40 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_KEY>;
+			debounce-interval = <60>;
+		};
+
+		wps {
+			label = "wps";
+			linux,code = <KEY_WPS_BUTTON>;
+			gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_KEY>;
+			debounce-interval = <60>;
+		};
+	};
+
+	clocks {
+		qca8k_uniphy1_rx312p5m: qca8k-uniphy1-rx312p5m {
+			compatible = "fixed-clock";
+			clock-frequency = <312500000>;
+			#clock-cells = <0>;
+		};
+
+		qca8k_uniphy1_tx312p5m: qca8k-uniphy1-tx312p5m {
+			compatible = "fixed-clock";
+			clock-frequency = <312500000>;
+			#clock-cells = <0>;
+		};
+	};
+};
+
+&blsp1_uart2 {
+	pinctrl-0 = <&uart2_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&qcom_ppe {
+	ethernet-ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+			phy-mode = "10g-qxgmii";
+			label = "lan1";
+			phy-handle = <&phy0>;
+			pcs-handle = <&pcs0_ch0>;
+			clocks = <&nsscc NSS_CC_PORT1_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT1_RX_CLK>,
+				 <&nsscc NSS_CC_PORT1_TX_CLK>;
+			clock-names = "port_mac",
+				      "port_rx",
+				      "port_tx";
+			resets = <&nsscc PORT1_MAC_ARES>,
+				 <&nsscc PORT1_RX_ARES>,
+				 <&nsscc PORT1_TX_ARES>;
+			reset-names = "port_mac",
+				      "port_rx",
+				      "port_tx";
+		};
+
+		port@2 {
+			reg = <2>;
+			phy-mode = "10g-qxgmii";
+			label = "lan2";
+			phy-handle = <&phy1>;
+			pcs-handle = <&pcs0_ch1>;
+			clocks = <&nsscc NSS_CC_PORT2_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT2_RX_CLK>,
+				 <&nsscc NSS_CC_PORT2_TX_CLK>;
+			clock-names = "port_mac",
+				      "port_rx",
+				      "port_tx";
+			resets = <&nsscc PORT2_MAC_ARES>,
+				 <&nsscc PORT2_RX_ARES>,
+				 <&nsscc PORT2_TX_ARES>;
+			reset-names = "port_mac",
+				      "port_rx",
+				      "port_tx";
+		};
+
+		port@3 {
+			reg = <3>;
+			phy-mode = "10g-qxgmii";
+			label = "lan3";
+			phy-handle = <&phy2>;
+			pcs-handle = <&pcs0_ch2>;
+			clocks = <&nsscc NSS_CC_PORT3_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT3_RX_CLK>,
+				 <&nsscc NSS_CC_PORT3_TX_CLK>;
+			clock-names = "port_mac",
+				      "port_rx",
+				      "port_tx";
+			resets = <&nsscc PORT3_MAC_ARES>,
+				 <&nsscc PORT3_RX_ARES>,
+				 <&nsscc PORT3_TX_ARES>;
+			reset-names = "port_mac",
+				      "port_rx",
+				      "port_tx";
+		};
+
+		port@4 {
+			reg = <4>;
+			phy-mode = "10g-qxgmii";
+			label = "lan4";
+			phy-handle = <&phy3>;
+			pcs-handle = <&pcs0_ch3>;
+			clocks = <&nsscc NSS_CC_PORT4_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT4_RX_CLK>,
+				 <&nsscc NSS_CC_PORT4_TX_CLK>;
+			clock-names = "port_mac",
+				      "port_rx",
+				      "port_tx";
+			resets = <&nsscc PORT4_MAC_ARES>,
+				 <&nsscc PORT4_RX_ARES>,
+				 <&nsscc PORT4_TX_ARES>;
+			reset-names = "port_mac",
+				      "port_rx",
+				      "port_tx";
+		};
+
+		/*
+		 * WAN, via a discrete PHY on &mdio (raw bus address 0x1c per
+		 * the vendor firmware dump) rather than the 4-port switch
+		 * package above - modeled after qcom_rdp433's port6/wan
+		 * (usxgmii over pcs2_ch0/UNIPHY2), which the vendor DTS's
+		 * "uniphy2_port6_*" clock names confirm is the same wiring
+		 * used here. Compatible/nvmem for the discrete PHY chip
+		 * itself still needs to be confirmed against real hardware.
+		 */
+		port@6 {
+			reg = <6>;
+			phy-mode = "usxgmii";
+			managed = "in-band-status";
+			label = "wan";
+			phy-handle = <&phy4>;
+			pcs-handle = <&pcs2_ch0>;
+			clocks = <&nsscc NSS_CC_PORT6_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT6_RX_CLK>,
+				 <&nsscc NSS_CC_PORT6_TX_CLK>;
+			clock-names = "port_mac",
+				      "port_rx",
+				      "port_tx";
+			resets = <&nsscc PORT6_MAC_ARES>,
+				 <&nsscc PORT6_RX_ARES>,
+				 <&nsscc PORT6_TX_ARES>;
+			reset-names = "port_mac",
+				      "port_rx",
+				      "port_tx";
+		};
+	};
+};
+
+&rpm_requests {
+	regulators {
+		compatible = "qcom,rpm-mp5496-regulators";
+
+		ipq9574_s1: s1 {
+			regulator-min-microvolt = <725000>;
+			regulator-max-microvolt = <1075000>;
+		};
+
+		mp5496_l2: l2 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		mp5496_l5: l5 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+	};
+};
+
+&sleep_clk {
+	clock-frequency = <32000>;
+};
+
+&sdhc_1 {
+	status = "okay";
+};
+
+/*
+ * The vendor firmware also enables an on-die 2.4 GHz radio
+ * (wifi@c0000000, "qcom,cnss-qca9574"). That node/driver isn't wired up
+ * in this tree's ipq9574.dtsi/ath12k support yet, so it's left out here.
+ *
+ * pcie1 (gen3x1) and pcie2 (gen3x2) both carry an actively enabled radio
+ * in the vendor firmware (its wifi@1 / wifi@2 nodes). pcie0 is unpopulated
+ * and pcie3, although wired to a wifi@3 node, ships status=disabled in the
+ * vendor DT - leaving it disabled here too until confirmed on real hardware.
+ */
+&pcie1_phy {
+	status = "okay";
+};
+
+&pcie1 {
+	pinctrl-0 = <&pcie1_default>;
+	pinctrl-names = "default";
+
+	perst-gpios = <&tlmm 26 GPIO_ACTIVE_LOW>;
+	status = "okay";
+
+	pcie@0,0 {
+		#address-cells = <3>;
+		#size-cells = <2>;
+		reg = <0 0 0 0 0>;
+
+		wifi1: pcie@0 {
+			compatible = "pci17cb,1109";
+			reg = <0 0 0 0 0>;
+			qcom,board_id = <0x02>;
+		};
+	};
+};
+
+&pcie2_phy {
+	status = "okay";
+};
+
+&pcie2 {
+	pinctrl-0 = <&pcie2_default>;
+	pinctrl-names = "default";
+
+	perst-gpios = <&tlmm 29 GPIO_ACTIVE_LOW>;
+	status = "okay";
+
+	pcie@0,0 {
+		#address-cells = <3>;
+		#size-cells = <2>;
+		reg = <0 0 0 0 0>;
+
+		wifi2: pcie@0 {
+			compatible = "pci17cb,1109";
+			reg = <0 0 0 0 0>;
+			qcom,board_id = <0x04>;
+		};
+	};
+};
+
+&tlmm {
+	gpio_keys_default: gpio-keys-default-state {
+		pins = "gpio37", "gpio40";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+	};
+
+	pcie1_default: pcie1-default-state {
+		perst-n-pins {
+			pins = "gpio26";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-down;
+			output-low;
+		};
+	};
+
+	pcie2_default: pcie2-default-state {
+		perst-n-pins {
+			pins = "gpio29";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-down;
+			output-low;
+		};
+	};
+};
+
+&mdio {
+	status = "okay";
+	clock-frequency = <6250000>;
+	reset-gpios = <&tlmm 60 GPIO_ACTIVE_LOW>;
+
+	qca8k_nsscc: clock-controller@18 {
+		compatible = "qcom,qca8084-nsscc";
+		reg = <0x18>;
+		clocks = <&cmn_pll ETH0_50MHZ_CLK>,
+			 <0>,
+			 <0>,
+			 <0>,
+			 <0>,
+			 <&qca8k_uniphy1_rx312p5m>,
+			 <&qca8k_uniphy1_tx312p5m>;
+		#clock-cells = <1>;
+		#reset-cells = <1>;
+	};
+
+	ethernet-phy-package@1 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		compatible = "qcom,qca8084-package";
+		reg = <1>;
+		clocks = <&qca8k_nsscc NSS_CC_APB_BRIDGE_CLK>,
+			 <&qca8k_nsscc NSS_CC_AHB_CLK>,
+			 <&qca8k_nsscc NSS_CC_SEC_CTRL_AHB_CLK>,
+			 <&qca8k_nsscc NSS_CC_TLMM_CLK>,
+			 <&qca8k_nsscc NSS_CC_TLMM_AHB_CLK>,
+			 <&qca8k_nsscc NSS_CC_CNOC_AHB_CLK>,
+			 <&qca8k_nsscc NSS_CC_MDIO_AHB_CLK>;
+		clock-names = "apb_bridge",
+			      "ahb",
+			      "sec_ctrl_ahb",
+			      "tlmm",
+			      "tlmm_ahb",
+			      "cnoc_ahb",
+			      "mdio_ahb";
+		resets = <&qca8k_nsscc NSS_CC_GEPHY_FULL_ARES>;
+		qcom,phy-addr-fixup = <1 2 3 4 5 6 7>;
+		qcom,package-mode = <QCA808X_PCS1_10G_QXGMII_PCS0_UNUNSED>;
+
+		phy0: ethernet-phy@1 {
+			compatible = "ethernet-phy-id004d.d180";
+			reg = <1>;
+			clocks = <&qca8k_nsscc NSS_CC_GEPHY0_SYS_CLK>;
+			resets = <&qca8k_nsscc NSS_CC_GEPHY0_SYS_ARES>;
+			qcom,xpcs-channel = <0>;
+		};
+
+		phy1: ethernet-phy@2 {
+			compatible = "ethernet-phy-id004d.d180";
+			reg = <2>;
+			clocks = <&qca8k_nsscc NSS_CC_GEPHY1_SYS_CLK>;
+			resets = <&qca8k_nsscc NSS_CC_GEPHY1_SYS_ARES>;
+			qcom,xpcs-channel = <1>;
+		};
+
+		phy2: ethernet-phy@3 {
+			compatible = "ethernet-phy-id004d.d180";
+			reg = <3>;
+			clocks = <&qca8k_nsscc NSS_CC_GEPHY2_SYS_CLK>;
+			resets = <&qca8k_nsscc NSS_CC_GEPHY2_SYS_ARES>;
+			qcom,xpcs-channel = <2>;
+		};
+
+		phy3: ethernet-phy@4 {
+			compatible = "ethernet-phy-id004d.d180";
+			reg = <4>;
+			clocks = <&qca8k_nsscc NSS_CC_GEPHY3_SYS_CLK>;
+			resets = <&qca8k_nsscc NSS_CC_GEPHY3_SYS_ARES>;
+			qcom,xpcs-channel = <3>;
+		};
+
+		pcs-phy@6 {
+			compatible = "qcom,qca8k-pcs-phy";
+			reg = <6>;
+			clocks = <&qca8k_nsscc NSS_CC_SRDS1_SYS_CLK>,
+				 <&qca8k_uniphy1_tx312p5m>,
+				 <&qca8k_uniphy1_rx312p5m>;
+			clock-names = "pcs", "pcs_rx_root", "pcs_tx_root";
+			resets = <&qca8k_nsscc NSS_CC_SRDS1_SYS_ARES>;
+		};
+
+		xpcs-phy@7 {
+			compatible = "qcom,qca8k-xpcs-phy";
+			reg = <7>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			resets = <&qca8k_nsscc NSS_CC_XPCS_ARES>;
+
+			channel@0 {
+				reg = <0>;
+				clocks = <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_XGMII_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_XGMII_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC1_GEPHY0_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC1_GEPHY0_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC1_RX_CLK_SRC>,
+					 <&qca8k_nsscc NSS_CC_MAC1_TX_CLK_SRC>;
+				clock-names = "xgmii_rx",
+					      "xgmii_tx",
+					      "xpcs_rx",
+					      "xpcs_tx",
+					      "port_rx",
+					      "port_tx",
+					      "rx_src",
+					      "tx_src";
+				resets = <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_XGMII_TX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_XGMII_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_TX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC1_GEPHY0_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC1_GEPHY0_TX_ARES>;
+				reset-names = "xgmii_rx",
+					      "xgmii_tx",
+					      "xpcs_rx",
+					      "xpcs_tx",
+					      "port_rx",
+					      "port_tx";
+			};
+
+			channel@1 {
+				reg = <1>;
+				clocks = <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_XGMII_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_XGMII_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC2_GEPHY1_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC2_GEPHY1_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC2_RX_CLK_SRC>,
+					 <&qca8k_nsscc NSS_CC_MAC2_TX_CLK_SRC>;
+				clock-names = "xgmii_rx",
+					      "xgmii_tx",
+					      "xpcs_rx",
+					      "xpcs_tx",
+					      "port_rx",
+					      "port_tx",
+					      "rx_src",
+					      "tx_src";
+				resets = <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_XGMII_TX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_XGMII_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_TX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC2_GEPHY1_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC2_GEPHY1_TX_ARES>;
+				reset-names = "xgmii_rx",
+					      "xgmii_tx",
+					      "xpcs_rx",
+					      "xpcs_tx",
+					      "port_rx",
+					      "port_tx";
+			};
+
+			channel@2 {
+				reg = <2>;
+				clocks = <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_XGMII_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_XGMII_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC3_GEPHY2_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC3_GEPHY2_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC3_RX_CLK_SRC>,
+					 <&qca8k_nsscc NSS_CC_MAC3_TX_CLK_SRC>;
+				clock-names = "xgmii_rx",
+					      "xgmii_tx",
+					      "xpcs_rx",
+					      "xpcs_tx",
+					      "port_rx",
+					      "port_tx",
+					      "rx_src",
+					      "tx_src";
+				resets = <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_XGMII_TX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_XGMII_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_TX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC3_GEPHY2_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC3_GEPHY2_TX_ARES>;
+				reset-names = "xgmii_rx",
+					      "xgmii_tx",
+					      "xpcs_rx",
+					      "xpcs_tx",
+					      "port_rx",
+					      "port_tx";
+			};
+
+			channel@3 {
+				reg = <3>;
+				clocks = <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_XGMII_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_XGMII_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC4_GEPHY3_RX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC4_GEPHY3_TX_CLK>,
+					 <&qca8k_nsscc NSS_CC_MAC4_RX_CLK_SRC>,
+					 <&qca8k_nsscc NSS_CC_MAC4_TX_CLK_SRC>;
+				clock-names = "xgmii_rx",
+					      "xgmii_tx",
+					      "xpcs_rx",
+					      "xpcs_tx",
+					      "port_rx",
+					      "port_tx",
+					      "rx_src",
+					      "tx_src";
+				resets = <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_XGMII_TX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_XGMII_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_TX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC4_GEPHY3_RX_ARES>,
+					 <&qca8k_nsscc NSS_CC_MAC4_GEPHY3_TX_ARES>;
+				reset-names = "xgmii_rx",
+					      "xgmii_tx",
+					      "xpcs_rx",
+					      "xpcs_tx",
+					      "port_rx",
+					      "port_tx";
+			};
+		};
+	};
+
+	/*
+	 * Discrete WAN PHY (raw mdio bus address 0x1c in the vendor
+	 * firmware dump), reset via a second gpio (tlmm 36) separate from
+	 * the switch package's own reset above. Modeled as a generic
+	 * clause-45 PHY the way qcom_rdp433 wires its discrete AQR PHYs;
+	 * the exact chip/compatible still needs confirming on real
+	 * hardware (e.g. via boot log once serial console works).
+	 */
+	phy4: ethernet-phy@1c {
+		compatible = "ethernet-phy-ieee802.3-c45";
+		reg = <0x1c>;
+		reset-gpios = <&tlmm 36 GPIO_ACTIVE_LOW>;
+	};
+};
+
+&usb_0_dwc3 {
+	dr_mode = "host";
+};
+
+&usb_0_qmpphy {
+	vdda-phy-supply = <&regulator_fixed_0p925>;
+
+	status = "okay";
+};
+
+&usb_0_qusbphy {
+	vdd-supply = <&regulator_fixed_0p925>;
+	vdda-phy-dpdm-supply = <&regulator_fixed_3p3>;
+
+	status = "okay";
+};
+
+&usb3 {
+	status = "okay";
+};
+
+&ref_48mhz_clk {
+	clock-div = <1>;
+	clock-mult = <1>;
+};
+
+&xo_board_clk {
+	clock-div = <2>;
+	clock-mult = <1>;
+};
+
+&xo_clk {
+	clock-frequency = <48000000>;
+};
+
+/* pcs1/port5 (lan5) is unused on this 4 LAN + 1 WAN board; pcs2/port6 (wan) stays enabled. */
+&pcs1 {
+	status = "disabled";
+};
