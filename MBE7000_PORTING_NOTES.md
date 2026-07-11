@@ -28,7 +28,9 @@ plus other gaps; see "Post-review fixes" below.
   RGBW status LED - see "Post-review fixes").
 - `target/linux/qualcommbe/image/ipq95xx.mk` - added `Device/linksys_mbe7000`
   (`FitImage` + `EmmcImage`, `SOC := ipq9574`,
-  `kmod-ath12k ath12k-firmware-qcn9274`).
+  `kmod-ath12k ath12k-firmware-qcn9274`, and
+  `IMAGE/factory.bin := qsdk-ipq-factory-nor` for a combined kernel+rootfs
+  factory image - see "Post-review fixes").
 - `target/linux/qualcommbe/ipq95xx/base-files/etc/board.d/02_network` - added
   `linksys,mbe7000` case: `lan1 lan2 lan3 lan4` + `wan`.
 - `target/linux/qualcommbe/ipq95xx/base-files/lib/upgrade/platform.sh` -
@@ -201,6 +203,21 @@ the compiler) and fixed three concrete defects:
    active-high; flip to `PWM_POLARITY_INVERTED` if common-anode) and whether
    the driver's channel index truly maps ch0->gpio44 etc. as the vendor DT
    implies (it should, given the `8*ch` register stride).
+
+5. **Combined single-file factory image.** `Device/EmmcImage`'s default
+   `factory.bin` is rootfs-only (`append-rootfs | pad-rootfs | pad-to 64k`),
+   so it is *not* a complete install image - it carries no kernel. Added
+   `IMAGE/factory.bin := qsdk-ipq-factory-nor` (as `8devices_kiwi-dvk`
+   does), which instead emits a QSDK-format FIT bundling two named
+   sub-images, `hlos` (the kernel `.itb`) and `rootfs` (the squashfs) - one
+   file that a QSDK-derived U-Boot flashes to the HLOS and rootfs partitions
+   in one shot. This is the same container structure as the extracted
+   MBE70WRT vendor firmware (`hlos` + `rootfs` + `wifi_fw*` sub-images). Note
+   this only changes what we *produce*; it does not defeat secure boot. On a
+   retail MBE7000 the stock/loader path will still reject it unless the
+   bootloader is made permissive. It exists so a single combined image is
+   ready if/when that becomes possible. Install on this eMMC board otherwise
+   remains: serial -> U-Boot -> TFTP the initramfs `.itb` -> `sysupgrade`.
 
 After these fixes the DTS still compiles cleanly (only pre-existing upstream
 `ipq9574.dtsi` i2c/spi unit-address warnings), and the compiled dtb was

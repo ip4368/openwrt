@@ -26,6 +26,12 @@ define Device/linksys_mbe7000
 	# (extracted from vendor firmware) still has to be created and appended
 	# here; the stock qcn9274 board-2.bin is unlikely to match this board.
 	DEVICE_PACKAGES := kmod-ath12k ath12k-firmware-qcn9274
+	# Combined single-file factory image (kernel "hlos" + "rootfs" as named
+	# QSDK-FIT sub-images), same as 8devices_kiwi-dvk and the same structure
+	# as the MBE70WRT vendor firmware. Overrides the rootfs-only factory.bin
+	# that Device/EmmcImage sets by default. Whether the stock (secure-boot)
+	# U-Boot will accept it is unconfirmed - see MBE7000_PORTING_NOTES.md.
+	IMAGE/factory.bin := qsdk-ipq-factory-nor
 endef
 TARGET_DEVICES += linksys_mbe7000
 
