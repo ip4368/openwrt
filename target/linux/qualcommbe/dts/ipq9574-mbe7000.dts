@@ -4,6 +4,7 @@
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
 #include "ipq9574.dtsi"
 
 #include <dt-bindings/clock/qcom,qca8k-nsscc.h>
@@ -80,6 +81,47 @@
 		};
 	};
 
+	/*
+	 * Front-panel RGBW status LED, driven by the SoC PWM block (4 channels
+	 * at gpio44-47). Channel/pin/colour mapping taken from the MBE70WRT
+	 * vendor DT (red=ch0/gpio44, green=ch1/gpio45, blue=ch2/gpio46,
+	 * white=ch3/gpio47; period 1250000 ns). Note this tree's ipq9574.dtsi
+	 * pwm node uses #pwm-cells = <3> (channel, period, flags), unlike the
+	 * QSDK's 2-cell form. Polarity assumed normal (active-high); flip to
+	 * PWM_POLARITY_INVERTED if the LED turns out common-anode on hardware.
+	 */
+	pwm-leds {
+		compatible = "pwm-leds";
+
+		led-red {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_STATUS;
+			pwms = <&pwm 0 1250000 0>;
+			max-brightness = <255>;
+		};
+
+		led-green {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_STATUS;
+			pwms = <&pwm 1 1250000 0>;
+			max-brightness = <255>;
+		};
+
+		led-blue {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_STATUS;
+			pwms = <&pwm 2 1250000 0>;
+			max-brightness = <255>;
+		};
+
+		led-white {
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_STATUS;
+			pwms = <&pwm 3 1250000 0>;
+			max-brightness = <255>;
+		};
+	};
+
 	clocks {
 		qca8k_uniphy1_rx312p5m: qca8k-uniphy1-rx312p5m {
 			compatible = "fixed-clock";
@@ -115,15 +157,15 @@
 			clocks = <&nsscc NSS_CC_PORT1_MAC_CLK>,
 				 <&nsscc NSS_CC_PORT1_RX_CLK>,
 				 <&nsscc NSS_CC_PORT1_TX_CLK>;
-			clock-names = "port_mac",
-				      "port_rx",
-				      "port_tx";
+			clock-names = "mac",
+				      "rx",
+				      "tx";
 			resets = <&nsscc PORT1_MAC_ARES>,
 				 <&nsscc PORT1_RX_ARES>,
 				 <&nsscc PORT1_TX_ARES>;
-			reset-names = "port_mac",
-				      "port_rx",
-				      "port_tx";
+			reset-names = "mac",
+				      "rx",
+				      "tx";
 		};
 
 		port@2 {
@@ -135,15 +177,15 @@
 			clocks = <&nsscc NSS_CC_PORT2_MAC_CLK>,
 				 <&nsscc NSS_CC_PORT2_RX_CLK>,
 				 <&nsscc NSS_CC_PORT2_TX_CLK>;
-			clock-names = "port_mac",
-				      "port_rx",
-				      "port_tx";
+			clock-names = "mac",
+				      "rx",
+				      "tx";
 			resets = <&nsscc PORT2_MAC_ARES>,
 				 <&nsscc PORT2_RX_ARES>,
 				 <&nsscc PORT2_TX_ARES>;
-			reset-names = "port_mac",
-				      "port_rx",
-				      "port_tx";
+			reset-names = "mac",
+				      "rx",
+				      "tx";
 		};
 
 		port@3 {
@@ -155,15 +197,15 @@
 			clocks = <&nsscc NSS_CC_PORT3_MAC_CLK>,
 				 <&nsscc NSS_CC_PORT3_RX_CLK>,
 				 <&nsscc NSS_CC_PORT3_TX_CLK>;
-			clock-names = "port_mac",
-				      "port_rx",
-				      "port_tx";
+			clock-names = "mac",
+				      "rx",
+				      "tx";
 			resets = <&nsscc PORT3_MAC_ARES>,
 				 <&nsscc PORT3_RX_ARES>,
 				 <&nsscc PORT3_TX_ARES>;
-			reset-names = "port_mac",
-				      "port_rx",
-				      "port_tx";
+			reset-names = "mac",
+				      "rx",
+				      "tx";
 		};
 
 		port@4 {
@@ -175,15 +217,15 @@
 			clocks = <&nsscc NSS_CC_PORT4_MAC_CLK>,
 				 <&nsscc NSS_CC_PORT4_RX_CLK>,
 				 <&nsscc NSS_CC_PORT4_TX_CLK>;
-			clock-names = "port_mac",
-				      "port_rx",
-				      "port_tx";
+			clock-names = "mac",
+				      "rx",
+				      "tx";
 			resets = <&nsscc PORT4_MAC_ARES>,
 				 <&nsscc PORT4_RX_ARES>,
 				 <&nsscc PORT4_TX_ARES>;
-			reset-names = "port_mac",
-				      "port_rx",
-				      "port_tx";
+			reset-names = "mac",
+				      "rx",
+				      "tx";
 		};
 
 		/*
@@ -205,15 +247,15 @@
 			clocks = <&nsscc NSS_CC_PORT6_MAC_CLK>,
 				 <&nsscc NSS_CC_PORT6_RX_CLK>,
 				 <&nsscc NSS_CC_PORT6_TX_CLK>;
-			clock-names = "port_mac",
-				      "port_rx",
-				      "port_tx";
+			clock-names = "mac",
+				      "rx",
+				      "tx";
 			resets = <&nsscc PORT6_MAC_ARES>,
 				 <&nsscc PORT6_RX_ARES>,
 				 <&nsscc PORT6_TX_ARES>;
-			reset-names = "port_mac",
-				      "port_rx",
-				      "port_tx";
+			reset-names = "mac",
+				      "rx",
+				      "tx";
 		};
 	};
 };
@@ -247,7 +289,22 @@
 	clock-frequency = <32000>;
 };
 
+&pwm {
+	pinctrl-0 = <&pwm_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
 &sdhc_1 {
+	bus-width = <8>;
+	max-frequency = <384000000>;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
+	mmc-hs400-enhanced-strobe;
+	non-removable;
+	pinctrl-0 = <&sdc_default_state>;
+	pinctrl-names = "default";
 	status = "okay";
 };
 
@@ -310,11 +367,49 @@
 };
 
 &tlmm {
+	sdc_default_state: sdc-default-state {
+		clk-pins {
+			pins = "gpio5";
+			function = "sdc_clk";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		cmd-pins {
+			pins = "gpio4";
+			function = "sdc_cmd";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+
+		data-pins {
+			pins = "gpio0", "gpio1", "gpio2",
+			       "gpio3", "gpio6", "gpio7",
+			       "gpio8", "gpio9";
+			function = "sdc_data";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+
+		rclk-pins {
+			pins = "gpio10";
+			function = "sdc_rclk";
+			drive-strength = <8>;
+			bias-pull-down;
+		};
+	};
+
 	gpio_keys_default: gpio-keys-default-state {
 		pins = "gpio37", "gpio40";
 		function = "gpio";
 		drive-strength = <8>;
 		bias-pull-up;
+	};
+
+	pwm_pins: pwm-state {
+		pins = "gpio44", "gpio45", "gpio46", "gpio47";
+		function = "pwm";
+		drive-strength = <8>;
 	};
 
 	pcie1_default: pcie1-default-state {

@@ -21,7 +21,11 @@ define Device/linksys_mbe7000
 	DEVICE_MODEL := MBE7000
 	DEVICE_DTS_CONFIG := config@mbe7000
 	SOC := ipq9574
-	DEVICE_PACKAGES := kmod-ath12k
+	# NOTE: the two PCIe radios (QCN9274) additionally need board-specific
+	# calibration data. An ipq-wifi-linksys_mbe7000 board-2.bin package
+	# (extracted from vendor firmware) still has to be created and appended
+	# here; the stock qcn9274 board-2.bin is unlikely to match this board.
+	DEVICE_PACKAGES := kmod-ath12k ath12k-firmware-qcn9274
 endef
 TARGET_DEVICES += linksys_mbe7000
 
