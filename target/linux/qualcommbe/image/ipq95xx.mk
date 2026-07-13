@@ -19,7 +19,10 @@ define Device/linksys_mbe7000
 	$(call Device/EmmcImage)
 	DEVICE_VENDOR := Linksys
 	DEVICE_MODEL := MBE7000
-	DEVICE_DTS_CONFIG := config@mbe7000
+	# Vendor U-Boot boots with a hardcoded `bootm ...#config@1` (config_name env),
+	# so the FIT's config node must be named exactly "config@1" or the stock
+	# bootloader aborts with "Config not available". Confirmed on a live MBE70WRT.
+	DEVICE_DTS_CONFIG := config@1
 	SOC := ipq9574
 	# NOTE: the two PCIe radios (QCN9274) additionally need board-specific
 	# calibration data. An ipq-wifi-linksys_mbe7000 board-2.bin package

@@ -436,7 +436,19 @@
 &mdio {
 	status = "okay";
 	clock-frequency = <6250000>;
+	/*
+	 * QCA8084 reset - EXPERIMENTAL, ethernet still unresolved (see
+	 * MBE7000_PORTING_NOTES.md "ethernet root cause").
+	 * History on this board:
+	 *   reset-gpios (no delay)  -> phy_poll_reset -110 (chip unreachable)
+	 *   phy-reset-gpio (ignored)-> -EBUSY, nss_cc_gephy0_sys_clk stuck off
+	 * The closest analog (Xiaomi BE7000) reaches "links up" with plain
+	 * reset-gpios, so our -110 is likely reset-recovery-too-short. Give the
+	 * chip a long assert + post-deassert settle before the MDIO scan.
+	 */
 	reset-gpios = <&tlmm 60 GPIO_ACTIVE_LOW>;
+	reset-delay-us = <10000>;
+	reset-post-delay-us = <150000>;
 
 	qca8k_nsscc: clock-controller@18 {
 		compatible = "qcom,qca8084-nsscc";

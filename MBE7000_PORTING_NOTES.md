@@ -460,6 +460,112 @@ is 2-wire (TX/RX/GND). Fix: run the terminal with flow control off
 (`tio --flow none ...`). Not a firmware issue; independent of whether the
 SoC supports flow control.
 
+## First successful boot + ethernet root cause (2026-07-13)
+
+Flashed the `config@1` factory image via the vendor LuCI sysupgrade (writes to
+the inactive A/B slot automatically) and it **booted mainline OpenWrt to
+userspace**: U-Boot loaded `config@1`, kernel 6.18.38 came up (`Machine model:
+Linksys MBE7000`), rootfs mounted from p31, f2fs overlay initialised, procd/
+console reached. The bringup fundamentally works. Two fixes got us here:
+- FIT config renamed `config@mbe7000` -> `config@1` (vendor U-Boot hardcodes
+  `bootm ...#config@1`; otherwise "Config not available"). Committed in the
+  DTS/image tree.
+- (behaviourally) the A/B + auto_recovery flow: a bad slot self-reverts after
+  3 failed boots, so LuCI-flash + power-cycle is a safe no-serial loop.
+
+**Ethernet does NOT work.** dmesg:
+```
+mdio_bus 90000.mdio-1: MDIO device at address 28 is missing   (WAN phy @0x1c absent)
+nss_cc_srds1_sys_clk status stuck at 'on'
+WARNING ... clk_branch_toggle+0x168  (x6, clk-branch.c:87)
+Qualcomm QCA8084 90000.mdio-1:01: phy_poll_reset failed: -110
+qcom_ppe 3a000000.ethernet: PPE port 1 failed to connect phylink: -ETIMEDOUT
+... sync_state() pending due to 3a000000.ethernet
+```
+The MDIO *bus* works (it scans). The QCA8084 switch-PHY never comes alive:
+the nsscc SerDes clock is stuck and the 4 internal PHYs don't respond
+(`phy_poll_reset -110`).
+
+**This is an unsolved mainline problem, not just our port.** OpenWrt PR #20604
+(Xiaomi BE7000, also IPQ9574 + QCA8084) has the **identical** qca8084 DTS block
+to ours - same `qca8k_nsscc` clocks `<&cmn_pll ETH0_50MHZ_CLK>, <0>,<0>,<0>,<0>,
+<uniphy1_rx312p5m>, <uniphy1_tx312p5m>`, same `reset-gpios = <&tlmm 60>` on
+`&mdio` (our "sonnet 5" patch shares its origin). That PR is **draft with
+ethernet NOT working** ("links are up, but no IP; ping doesn't work"). A fork
+(@kravasuper) reportedly has working ethernet but others (@BrainSlayer) can't
+replicate; suspected HW-revision differences. So the `<0>` clock stubs are
+*not* obviously the bug - they're the shared community state.
+
+**Our symptom is worse than the BE7000's** (they get "links up"; we get
+`-110`, PHY not responding at all), which points to an *additional*
+board-specific issue - most likely the **QCA8084 reset**: the vendor MBE70 DTS
+uses `phy-reset-gpio = <&tlmm 60 0 &tlmm 36 0>` (BOTH gpio60 and gpio36,
+flags 0), whereas we drive only gpio60 (active-low) on `&mdio` and assign
+gpio36 to the WAN PHY. If the qca8084 needs gpio36 released too, or the
+polarity differs, it stays in reset -> `-110`. Unverified.
+
+**Fix attempt (2026-07-13): `reset-gpios` -> `phy-reset-gpio` on `&mdio`.**
+Comparing against the *working* TP-Link Archer BE800 (PR #20373, the reference
+the BE7000 dev copied) revealed the one real difference: BE800 names the
+QCA8084 chip reset **`phy-reset-gpio`** (a QSDK property mainline's MDIO core
+does NOT read), whereas our "sonnet 5" patch used **`reset-gpios`** (which
+mainline DOES act on). Theory: U-Boot already brings the QCA8084 up (its log
+reads the PHY IDs); mainline then re-asserts gpio60 during bus registration
+and the chip can't recover in the scan window -> `phy_poll_reset -110` +
+`srds1_sys_clk stuck`. This explains why ours is *worse* than BE800 (they never
+disturb the chip). Changed to `phy-reset-gpio` to match BE800 exactly, leaving
+the U-Boot-initialised chip untouched (the package's `NSS_CC_GEPHY_FULL_ARES`
+reset still handles the internal PHYs). Our whole qualcommbe ethernet patch
+stack (0301-0361, incl. nsscc-qca8k clock driver + full IPQ9574 PCS) is present
+and current - the gap to BE800 was purely this DT property name. NOTE: even if
+this fixes `-110`, BE800/BE7000 additionally needed a not-upstreamed XPCS
+`qca8084_qxgmii_set_speed()` fix to pass traffic, so a second hurdle may remain.
+
+**Result of the `phy-reset-gpio` change (2026-07-13, boot log `_2`): advanced
+one layer, new blocker.** The `-110` is GONE - the QCA8084 is now reachable
+over MDIO. New failure: `nss_cc_gephy0_sys_clk status stuck at 'off'` ->
+`clk_branch2_enable` WARN in `qca8084_probe` -> `error -EBUSY: Enable PHY clock
+failed`; all 4 QCA8084 PHYs fail probe (`-16`), PPE falls back to Generic PHY
+for lan1-4, WAN gets `-ENODEV`. So: chip reachable, but its internal GEPHY
+clock won't start (parent = the SoC's `cmn_pll ETH0_50MHZ` 50 MHz ref). Our SoC
+clock ref is correct (`xo_clk=48MHz`, `ref_48mhz`, `xo_board_clk` per the RDP
+reference), so the 50 MHz should be produced - the chip's internal clock just
+won't run.
+
+**Reconciliation with the reference ports - our board has its own quirk:**
+- Xiaomi BE7000 (PR #20604, closest analog: consumer router + vendor U-Boot)
+  uses `reset-gpios` (no delay), no kernel patches, and gets **"links up but no
+  IP"**. Its qca8084 *does* come up.
+- TP-Link BE800 (PR #20373) uses `phy-reset-gpio` and works (different
+  board/bootloader), plus PCS patches we already have.
+- **Ours behaves differently from BOTH**: `reset-gpios` -> `-110` (chip
+  unreachable); `phy-reset-gpio` -> `-EBUSY` (chip reachable, GEPHY clock
+  stuck). So the MBE7000 has a board/U-Boot-specific QCA8084 clock/reset-state
+  quirk beyond what the reference DTs handle. The Linksys U-Boot evidently
+  leaves the chip in a state mainline's clock-enable can't drive, and our
+  board's reset recovery differs from BE7000's.
+
+This is now genuinely at the frontier: the remaining issue is QCA8084 internal
+clock/reset state that needs **live register inspection to diagnose** - exactly
+what this unit can't provide (dead serial RX). Candidate next experiments if
+resumed: (a) `reset-gpios` + generous `reset-delay-us`/`reset-post-delay-us`
+(bet: our `-110` was reset-recovery-too-short; aim for BE7000's "links up");
+(b) track PR #20604/#20373 for the eventual consumer-device qca8084 fix.
+
+**Current committed DTS state:** experiment (a) - `&mdio` uses `reset-gpios =
+<&tlmm 60 GPIO_ACTIVE_LOW>` + `reset-delay-us = <10000>` +
+`reset-post-delay-us = <150000>`. Result PENDING (build/flash not yet
+evaluated). If it does not reach at least "links up", ethernet is parked here
+until a unit with a working serial console or an upstream qca8084 consumer-fix
+is available. Everything else (boot, eMMC, config@1, LEDs, A/B flashing) works.
+
+Blind iteration is the only channel (this unit has **no usable serial RX** -
+only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
+a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:
+- Diff our DTS against @kravasuper's fork (the only claimed-working qca8084).
+- Try releasing gpio36 alongside gpio60 as qca8084 reset; test reset polarity.
+- Track PR #20604 upstream for the eventual qca8084 fix.
+
 ## Known gaps / things NOT verified against real hardware
 
 - **WAN PHY chip identity.** `phy4` in the DTS uses a generic
