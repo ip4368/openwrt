@@ -316,15 +316,149 @@ by the proprietary cnss/qcn9224 platform driver via the `11-wifi-fw`
 hotplug script. It does **not** contain a mainline `board-2.bin`, which is
 what OpenWrt's `kmod-ath12k` needs. Converting the raw `bdwlan` BDF into a
 `board-2.bin` (via `ath12k-bdencoder`) requires knowing the exact board-id
-string mainline ath12k requests for these radios - and that is only
-readable from the device itself (`dmesg`: "failed to fetch board data for
-bus=pci,qmi-board-id=..."). So a correct `ipq-wifi-linksys_mbe7000` package
-cannot be built blind; the raw BDFs are preserved in
-`/home/daniel/mbe7000_wrt_extract/` for that conversion once hardware is
-available. There is also an optimistic path: since this is a stock
+mainline ath12k requests for these radios. **UPDATE 2026-07-13: the QSDK
+board-id is now known - `0x1006` for the QCN9224 radios** (see "Live-device
+teardown"), and the exact `b1006` BDF is saved in
+`~/mbe7000_wrt_extract/board-data/`. The remaining unknown is only the
+*string form* mainline requests (`bus=pci,qmi-board-id=...`), read from a
+booted mainline `dmesg`. The raw BDFs are preserved for that conversion. There is also an optimistic path: since this is a stock
 AP-AL02-C4 reference design, the reference `board-2.bin` already shipped in
 `ath12k-firmware-qcn9274` may contain a matching board-id and Just Work -
 to be checked on hardware.
+
+## Live-device teardown (2026-07-13) - from a booting MBE70WRT unit
+
+Got serial console + a root shell on an actual **MBE70WRT** (the WRT SKU)
+running vendor QSDK firmware (Linux 5.4.213). Full boot log at
+`~/MBE70.log`. This confirms a pile of previously-inferred facts and resolves
+the Wi-Fi board-id gap. Dumped artifacts + a README in
+`~/mbe7000_wrt_extract/board-data/`.
+
+Confirmed from the running device:
+- **4 PWM LEDs** - vendor prints `>>> Register 4 PWM-LEDs`. Matches this
+  port's 4-channel `pwm-leds`. Was inference; now confirmed.
+- **eMMC** - `mmcblk0 ... 8GTF4R 7.28 GiB`, HS200, boot0/boot1 4 MiB each,
+  33 GPT partitions (`p1..p33`). `&sdhc_1` config validated.
+- **Ethernet** - 4 LAN (macid 1-4) + WAN (macid 6) come up (`dp1..dp5`).
+  PPE port map confirmed.
+- **Radios = QCN9224** (not QCN9274) - live PCI enum `pci ... [17cb:1109]`,
+  cnss `QCN9224_PCI2`, dual-MAC firmware `qcn9224/amss_dualmac.bin`. Two PCIe
+  radios (5 GHz + 6 GHz) + on-die QCA9574 2.4 GHz. The DTS `pci17cb,1109`
+  device-id is right; the *silicon* is QCN9224, which mainline ath12k does
+  not support (see below).
+- **Wi-Fi board-id = `0x1006`** for the QCN9224 radios - the boot log shows
+  `Downloading BDF: qcn9224/bdwlan.b1006, size: 161792`. The on-die QCA9574
+  uses the default `bdwlan.bin`. **This resolves the "board-id unknown" gap.**
+  Both BDFs (generic, from the firmware's WIFI_FW squashfs) are stashed in
+  `board-data/`.
+- **MAC base = `80:69:1A:B2:C1:07`** (Linksys OUI); eth = base, wlan =
+  base+08/+09. Stored per-unit in ART/appsblenv, read at runtime - not baked
+  into any image. (U-Boot couldn't parse `eth1addr`, so GMACs fell back to
+  random MACs in this boot - cosmetic.)
+- **machid `0x8050301`**; bootargs `console=ttyMSM0,115200n8
+  root=PARTUUID=37580e59-... gpt rootwait vmalloc=1G`.
+- **Per-device cal lives on the device** - ART on `mmcblk0p20`, WIFI_FW
+  squashfs on `mmcblk0p26`. The per-unit `caldata.bin` is ~identical to the
+  generic `bdwlan.bin` (15660 vs 15661 non-zero bytes; differs in a handful),
+  so per-unit variation is negligible and handled at runtime from the unit's
+  own ART.
+
+### eMMC layout & A/B boot (from `fw_printenv` + `/proc/partitions`)
+
+The vendor uses a dual-slot (A/B) scheme with **raw eMMC block offsets for the
+kernel** and **GPT partitions for rootfs** - not partition *labels* for the
+kernel. Key env:
+
+```
+boot_part=1  auto_recovery=yes  boot_part_ready=3   machid=8050301
+prikern=0x00010a22 (=68130) altkern=0x0010ea22 (=1108514) kernsize=0x4000 (=8 MiB)
+bootcmd=bootipq
+bootpart1 = mmc read $loadaddr $prikern $kernsize && bootm $loadaddr#config@1
+            partbootargs  = init=/sbin/init root=/dev/mmcblk0p29 ro rootfstype=squashfs rootwait
+bootpart2 = mmc read $loadaddr $altkern $kernsize && bootm $loadaddr#config@1
+            partbootargs2 = init=/sbin/init root=/dev/mmcblk0p31 ro rootfstype=squashfs rootwait
+flashimg  = tftp $loadaddr $image && mmc erase $prikern $imgsize && mmc write ...   (image=MBE70.img)
+ipaddr=192.168.1.1  serverip=192.168.1.254   ethaddr=80:69:1A:B2:C1:08
+```
+
+`prikern`/`kernsize` match the very first boot log line exactly: `MMC read ...
+block # 68130, count 16384`. Partition sizes (`/proc/partitions`, KiB) resolve
+the slot map:
+
+| part | size | role |
+|------|------|------|
+| p20 | 1 MiB | ART (per-device cal) |
+| p26 / p27 | 10 MiB each | WIFI_FW squashfs (A / B) |
+| **p28 / p30** | 8 MiB each | **HLOS kernel A / B** (= prikern / altkern regions) |
+| **p29 / p31** | 500 MiB each | **rootfs A / B** (root=p29 / root=p31) |
+| p33 | ~2.5 GiB | data/overlay |
+
+So the real layout is `[kernA][rootA][kernB][rootB]`, A/B mirrored. This
+**supersedes the copied-from-kiwi-dvk `CI_KERNPART="0:HLOS"` /
+`CI_ROOTPART="rootfs"` guess** - rootfs is a real GPT partition (p29/p31) but
+the **kernel is flashed to raw block offsets** and booted with a hardcoded
+`#config@1` (our FitImage names its config `config@mbe7000` - a mismatch to
+reconcile if we ever reuse the vendor `bootcmd`).
+
+**Two safe test paths now fully mapped:**
+1. **RAM boot** (no flash touched): interrupt U-Boot, `tftp` the
+   `-initramfs-uImage.itb` to `$loadaddr` and `bootm` it (plain, no `#config`).
+   There's even a built-in `flashimg` tftp recovery path.
+2. **A/B slot test** (no serial needed, non-bricking): from a vendor root
+   shell, write OpenWrt kernel → slot-B kernel region (altkern / p30) and
+   rootfs → p31, `fw_setenv boot_part 2`, reboot. If it fails to come up,
+   `auto_recovery` falls back to the intact vendor slot 1. Reversible via
+   `fw_setenv boot_part 1`.
+
+**GPT partition table (CONFIRMED 2026-07-13** from a raw dump of the first 40
+sectors, parsed - `gdisk`/`sgdisk` aren't on the vendor fw):
+
+```
+p20 0:ART      1 MiB    (per-device cal)
+p26 0:WIFIFW   10 MiB   p27 0:WIFIFW_1 10 MiB
+p28 0:HLOS     8 MiB   start LBA 68130   = prikern (slot A kernel)
+p29 rootfs     500 MiB                    = slot A rootfs (root=mmcblk0p29)
+p30 0:HLOS_1   8 MiB   start LBA 1108514 = altkern (slot B kernel)
+p31 rootfs_1   500 MiB                    = slot B rootfs (root=mmcblk0p31)
+p33 syscfg     2.5 GiB (data)
+```
+
+Key result: **`altkern` (0x10ea22 = 1108514) is exactly p30's start LBA**, so
+`dd of=/dev/mmcblk0p30` == the raw kernel offset the bootloader reads, but
+bounded by the partition. The kernel FIT (5.73 MiB) fits the 8 MiB slot;
+`root.squashfs` (10.1 MiB) fits the 500 MiB rootfs slot. This **confirms the
+port's `CI_KERNPART="0:HLOS"` / `CI_ROOTPART="rootfs"` are correct** (they were
+copied from kiwi-dvk and are now verified against the real Linksys GPT), and
+gives the exact A/B slot-B flash targets (p30 + p31).
+
+### Universal-image architecture (one image for all MBE70/MBE7000)
+
+Three-way split - only the first belongs in a shared firmware image:
+1. **Board data** (`b1006` + default `bdwlan.bin`) - board-DESIGN level,
+   identical on every unit → ships in image (as a converted `board-2.bin`,
+   once the driver supports the radios).
+2. **Per-device RF cal** (ART `p20`) - unique per unit → NOT in image; read
+   from each device's own flash at runtime.
+3. **Per-device MAC** - unique per unit → NOT in image; read at runtime.
+So: do **not** embed the per-device `caldata`/ART. Standard OpenWrt practice.
+
+### Secure boot - what this unit proves (and doesn't)
+
+This MBE70WRT's U-Boot loads a plain kernel FIT and verifies it with
+**crc32 + sha1 hashes only - no RSA/cert signature check** (`Verifying Hash
+Integrity ... crc32+ sha1+ OK`). So on the **MBE70WRT**, an unsigned
+OpenWrt FIT should be accepted. This says **nothing** about the retail
+**MBE7000**, whose stock firmware is a signed Qualcomm ELF and whose
+secure-boot fuse state is unknown - see the "Secure boot / flashing" section.
+
+### Serial console gotcha (RX dead)
+
+If TX works (you see the log) but RX doesn't (can't interrupt autoboot /
+can't type), it's almost always **host-side hardware flow control** with
+RTS/CTS unwired - the host holds off TX waiting for CTS. The console header
+is 2-wire (TX/RX/GND). Fix: run the terminal with flow control off
+(`tio --flow none ...`). Not a firmware issue; independent of whether the
+SoC supports flow control.
 
 ## Known gaps / things NOT verified against real hardware
 
@@ -336,19 +470,19 @@ to be checked on hardware.
   firmware via `nvmem-cells` (like `rdp433`'s `aqr_fw`), that's not wired
   up here at all. **Check the boot log once serial console works** - the
   phy driver probe should identify the chip.
-- **LEDs**: none defined. If they're not actually driven by the K32W061,
-  they may need discovering via GPIO sysfs poking or vendor firmware
-  boot log/gpio dump.
+- **LEDs**: RESOLVED - 4 PWM RGBW LEDs, wired up and confirmed by the vendor
+  boot log (`>>> Register 4 PWM-LEDs`). See "Post-review fixes" and
+  "Live-device teardown". Polarity/active-state still unverified on mainline.
 - **pcie3** (3rd external radio slot): left disabled, matching the vendor
   firmware's own choice on the 1.0.10 build. Unknown whether later
   firmware (up to 1.0.14, the latest GPL release seen) enables it, i.e.
   whether the board actually has a 3rd radio chip populated.
-- **eMMC partition names** for sysupgrade (`platform.sh`,
-  `CI_KERNPART="0:HLOS"` / `CI_ROOTPART="rootfs"`) are copied from
-  `8devices,kiwi-dvk` verbatim, not confirmed against Linksys's actual GPT
-  partition table. Don't trust `sysupgrade`/factory flashing until this is
-  checked (e.g. `cat /proc/partitions` + partition names once initramfs
-  boots).
+- **eMMC partition names** RESOLVED - `CI_KERNPART="0:HLOS"` /
+  `CI_ROOTPART="rootfs"` are confirmed correct against the real Linksys GPT
+  (see "eMMC layout & A/B boot"). Note the layout is A/B dual-slot
+  (0:HLOS/0:HLOS_1, rootfs/rootfs_1); a proper sysupgrade that participates in
+  the vendor A/B + `boot_count` scheme is still to be designed - the current
+  test path writes slot B manually.
 - **On-die 2.4 GHz radio** not enabled (this tree doesn't support it yet -
   see above). MBE7000 would need it added upstream/locally for full
   tri-band operation; for now only the two PCIe radios (likely 5 GHz +
