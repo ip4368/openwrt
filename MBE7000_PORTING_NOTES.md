@@ -608,6 +608,45 @@ image -> add USB-Ethernet (`kmod-usb-net-*`) so a dongle gives a shell, since
 this unit has no serial RX. Vendor SSH (192.168.1.1) remains available for
 targeted known-good register reads during that work.
 
+### ROOT CAUSE FOUND + fix built (2026-07-13, awaiting flash test)
+
+Reading the mainline qca8084 driver (`drivers/net/phy/qcom/qca808x.c`) pinned
+the exact bug. The driver programs the switch **work mode + EPHY LDO + package
+clock tree** only in `.config_init`
+(`qca8084_phy_package_config_init_once`), whose own comment says it is "the
+necessary config sequence after GPIO reset". But `.config_init` runs AFTER the
+per-PHY probe (`qca8084_probe` -> `devm_clk_get_enabled` + PHY reset poll).
+
+- Reference boards (RDP / TP-Link BE800): **U-Boot pre-inits the QCA8084**, so
+  the per-PHY clock enable + reset poll succeed at probe; `.config_init` just
+  re-applies config. Works.
+- **Linksys MBE7000: U-Boot does NOT init the switch.** The chip is cold at
+  probe -> per-PHY clock enable fails `-EBUSY` (`gephy0_sys_clk` stuck), or with
+  a GPIO reset the PHY reset poll times out `-110` - and `.config_init` is
+  never reached. This explains ALL three earlier symptoms exactly.
+
+**Fix:** patch `patches-6.18/0362-net-phy-qca8084-cold-init-package-in-probe-
+for-consum.patch` moves the chip config (work mode + EPHY LDO + package clock
+init) into `qca8084_phy_package_probe_once()`, right after the package reset is
+deasserted and **before** any per-PHY access. Idempotent, so RDP/BE800 are
+unaffected. DTS paired back to plain `reset-gpios = <&tlmm 60 GPIO_ACTIVE_LOW>`
+(the driver's intended "GPIO reset -> config" flow).
+
+Supported by the vendor-SSH evidence: gpio60 rests high (out of reset), CMN PLL
+50 MHz ref config is identical to mainline (ruled out), clock parent chain is
+sane - the only gap was the chip never being configured before per-PHY access.
+
+**STATUS: BUILT, NOT YET FLASHED.** Test factory image:
+`bin/targets/qualcommbe/ipq95xx/openwrt-...-linksys_mbe7000-squashfs-factory.bin`
+sha256 `ab9311630c7500c98ac10423cfbf427a0a047f91a5566eae646d0226f133275a`.
+
+**TOMORROW:** flash via LuCI (-> slot 2 -> reboot), capture serial TX boot log.
+Verdicts: (win) no -110/-EBUSY, QCA8084 PHYs probe, lan1-4 up -> if DHCP works,
+cracked it (and 0362 is upstream-worthy); (partial) links up but no traffic ->
+add the XPCS `qca8084_qxgmii_set_speed()` fix; (fail) boot log shows the next
+register step - vendor SSH (192.168.1.1, pw in chat) still open as known-good
+reference. If it works, the build_dir edit is already captured as patch 0362.
+
 Blind iteration is the only channel (this unit has **no usable serial RX** -
 only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
 a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:

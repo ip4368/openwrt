@@ -437,19 +437,15 @@
 	status = "okay";
 	clock-frequency = <6250000>;
 	/*
-	 * QCA8084 reset - ethernet UNRESOLVED, parked here (furthest-progress
-	 * state). See MBE7000_PORTING_NOTES.md. Tested on real hardware:
-	 *   reset-gpios (no delay)          -> phy_poll_reset -110
-	 *   reset-gpios + 10ms/150ms delays -> phy_poll_reset -110 (no change)
-	 *   phy-reset-gpio (mainline ignore)-> chip REACHABLE, only -EBUSY
-	 *                                      (nss_cc_gephy0_sys_clk stuck off)
-	 * Conclusion: resetting via gpio60 breaks the chip on this board (the
-	 * Linksys U-Boot inits the QCA8084 and mainline doesn't re-init after a
-	 * reset), so we must NOT reset it. phy-reset-gpio leaves the U-Boot state
-	 * intact and gets furthest; the remaining GEPHY-clock-stuck issue needs
-	 * live register debugging (no serial RX on the test unit).
+	 * QCA8084 GPIO reset. The mainline qca8084 driver's design is
+	 * "GPIO reset -> config sequence (work mode / EPHY LDO / package
+	 * clocks)". That config runs in .config_init, which on consumer boards
+	 * (Linksys U-Boot does NOT pre-init the switch) is too late - the
+	 * per-PHY probe fails first with -EBUSY/-110. Paired with a driver patch
+	 * that moves the config into package_probe_once (before per-PHY access),
+	 * so plain reset-gpios is correct here. See MBE7000_PORTING_NOTES.md.
 	 */
-	phy-reset-gpio = <&tlmm 60 GPIO_ACTIVE_LOW>;
+	reset-gpios = <&tlmm 60 GPIO_ACTIVE_LOW>;
 
 	qca8k_nsscc: clock-controller@18 {
 		compatible = "qcom,qca8084-nsscc";

@@ -1,0 +1,85 @@
+From: Daniel Ip <kg4368@yahoo.com.hk>
+Date: Sun, 13 Jul 2026 23:45:00 +0100
+Subject: [PATCH] net: phy: qca8084: configure package in probe for cold
+ (consumer) bootloaders
+
+The mainline qca8084 driver programs the switch work mode, enables the
+EPHY LDO and brings up the package clock tree only in .config_init
+(qca8084_phy_package_config_init_once), which runs AFTER the per-PHY
+probe (qca8084_probe -> devm_clk_get_enabled + phy reset poll).
+
+On reference boards (RDP / TP-Link BE800) U-Boot pre-initialises the
+QCA8084, so the per-PHY clock enable and reset poll succeed at probe and
+.config_init merely re-applies the config. On consumer boards whose
+bootloader does NOT init the switch (e.g. Linksys MBE7000), the chip is
+cold at probe time: the per-PHY clock enable fails with -EBUSY
+(nss_cc_gephy0_sys_clk stuck) or, with a GPIO reset applied, the PHY
+reset poll times out with -110 - and .config_init is never reached.
+
+Move the chip-level config (work mode + EPHY LDO + package clock init)
+into qca8084_phy_package_probe_once(), right after the package reset is
+deasserted and before any per-PHY access. It is idempotent, so boards
+where U-Boot already configured the switch are unaffected.
+
+Signed-off-by: Daniel Ip <kg4368@yahoo.com.hk>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -1067,7 +1067,7 @@
+ 	struct qca808x_shared_priv *shared_priv;
+ 	struct reset_control *rstc;
+ 	struct device_node *child;
+-	int i, ret, clear, set;
++	int i, ret, clear, set, mode;
+ 	struct clk *clk;
+ 
+ 	/* Program the MDIO address of PHY and PCS optionally, the MDIO
+@@ -1153,7 +1153,47 @@
+ 				     "package reset not ready\n");
+ 
+ 	/* Deassert PHY package. */
+-	return reset_control_deassert(rstc);
++	ret = reset_control_deassert(rstc);
++	if (ret)
++		return ret;
++
++	/*
++	 * Consumer bootloaders (e.g. Linksys MBE7000) leave the QCA8084
++	 * unconfigured after the GPIO reset above, so the per-PHY clock enable
++	 * and phy reset in qca8084_probe() fail (-EBUSY / -110). Program the
++	 * work mode, enable the EPHY LDO and bring up the package clock tree
++	 * here - before any per-PHY access - instead of only in .config_init
++	 * (which runs too late). Idempotent where U-Boot already did this.
++	 */
++	switch (shared_priv->package_mode) {
++	case QCA808X_PCS1_10G_QXGMII_PCS0_UNUNSED:
++		mode = QCA8084_WORK_MODE_QXGMII;
++		break;
++	case QCA808X_PCS1_SGMII_MAC_PCS0_SGMII_MAC:
++		mode = QCA8084_WORK_MODE_SWITCH;
++		break;
++	case QCA808X_PCS1_SGMII_MAC_PCS0_SGMII_PHY:
++		mode = QCA8084_WORK_MODE_SWITCH_PORT4_SGMII;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	ret = qca8084_mii_modify(phydev, QCA8084_WORK_MODE_CFG,
++				 QCA8084_WORK_MODE_MASK,
++				 FIELD_PREP(QCA8084_WORK_MODE_MASK, mode));
++	if (ret)
++		return ret;
++
++	/* Enable efuse loading into analog circuit */
++	ret = qca8084_mii_modify(phydev, QCA8084_EPHY_CFG,
++				 QCA8084_EPHY_LDO_EN, 0);
++	if (ret)
++		return ret;
++
++	usleep_range(10000, 11000);
++
++	return qca8084_package_clock_init(shared_priv);
+ }
+ 
+ static void qca8084_phy_package_remove_once(struct phy_device *phydev)
