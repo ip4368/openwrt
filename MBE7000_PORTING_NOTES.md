@@ -577,6 +577,37 @@ with a working serial console is available, or the QCA8084 consumer-device
 bring-up matures upstream (track PR #20604 / #20373). Everything else works:
 boot, eMMC, config@1, PWM LEDs, A/B factory-flash via LuCI + auto-recovery.
 
+**Vendor-firmware SSH investigation (2026-07-13) - root cause narrowed.**
+Got root SSH into the running QSDK vendor firmware (working QCA8084) and read
+the known-good hardware state:
+- **gpio60 (QCA8084 reset) = `out high`** while working (active-low confirmed;
+  chip must be left HIGH / out of reset - do NOT pulse it). gpio36 (WAN) = high
+  too. MDC=gpio38, MDIO=gpio39 (func1).
+- **CMN PLL is NOT the problem.** Working `CMN_PLL_REFCLK_CONFIG` (0x9b784) =
+  `0x8017` -> reference INDEX=7, DIV=1, internal. Mainline
+  `ipq_cmn_pll_find_freq_index(48000000)` also returns **index 7**, so our
+  48 MHz DT ref makes the mainline driver program the identical config. The
+  50 MHz `ETH0_50MHZ` reference that feeds the QCA8084 should be present in
+  mainline. (Regs captured: locked@0x9b064=0x07, refsrc@0x9b028=0x555,
+  reset@0x9b780=0xFF, ctrl@0x9b78c=0x5D0, div@0x9b794=0x6C7D.)
+- **The mainline clock chain is sane**: `nss_cc_gephy0_sys_clk` <-
+  `nss_cc_sys_clk_src` (RCG, /2 -> 25 MHz) <- `DT_XO` = index 0 =
+  `<&cmn_pll ETH0_50MHZ_CLK>`. Parent is provided (not a `<0>` stub).
+
+Conclusion: the 50 MHz reference and gpio reset are fine; the failure is
+**inside the QCA8084's own GEPHY power/clock bring-up**. The Linksys U-Boot
+only minimally inits the chip (its log shows just one uniphy path up), and
+mainline's qca8084 driver - which was developed against RDP/TP-Link U-Boots
+that pre-init the switch - doesn't do the full GEPHY power-up that QSDK's
+`ssdk` does. With `phy-reset-gpio` the GEPHYs stay in U-Boot's powered-down
+state (`gephy0_sys_clk` won't start, -EBUSY); with `reset-gpios` the gpio pulse
+leaves the chip unreachable (-110). Fixing this needs **driver-level GEPHY
+init + live iteration on our OpenWrt** (compare mainline's qca8084 register
+writes against the vendor's working state). Requires network access into our
+image -> add USB-Ethernet (`kmod-usb-net-*`) so a dongle gives a shell, since
+this unit has no serial RX. Vendor SSH (192.168.1.1) remains available for
+targeted known-good register reads during that work.
+
 Blind iteration is the only channel (this unit has **no usable serial RX** -
 only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
 a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:
