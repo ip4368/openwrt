@@ -552,12 +552,30 @@ resumed: (a) `reset-gpios` + generous `reset-delay-us`/`reset-post-delay-us`
 (bet: our `-110` was reset-recovery-too-short; aim for BE7000's "links up");
 (b) track PR #20604/#20373 for the eventual consumer-device qca8084 fix.
 
-**Current committed DTS state:** experiment (a) - `&mdio` uses `reset-gpios =
-<&tlmm 60 GPIO_ACTIVE_LOW>` + `reset-delay-us = <10000>` +
-`reset-post-delay-us = <150000>`. Result PENDING (build/flash not yet
-evaluated). If it does not reach at least "links up", ethernet is parked here
-until a unit with a working serial console or an upstream qca8084 consumer-fix
-is available. Everything else (boot, eMMC, config@1, LEDs, A/B flashing) works.
+**Experiment (a) result (boot log `_3`): REGRESSED to `-110`.** `reset-gpios`
++ `reset-delay-us=10000` + `reset-post-delay-us=150000` gave the same
+`phy_poll_reset failed: -110` as plain `reset-gpios` (now with `clk_branch2_
+disable` warnings on several nss_cc clocks stuck 'on' - clk_disable_unused
+can't reach the reset chip). So reset **timing is not the issue** - asserting
+gpio60 at all breaks the QCA8084 on this board, because the Linksys U-Boot
+initialises the chip and mainline does not re-init it after a reset.
+
+**Conclusion / parked state:** `phy-reset-gpio` is the furthest-progress config
+(chip reachable, only the internal GEPHY clock won't start) and is what the
+committed DTS now uses. The three tested states:
+
+| &mdio reset            | result                                        |
+|------------------------|-----------------------------------------------|
+| reset-gpios            | -110 (chip unreachable)                       |
+| reset-gpios + delays   | -110 (unchanged - timing ruled out)           |
+| **phy-reset-gpio**     | chip reachable; -EBUSY, gephy0_sys_clk stuck  |
+
+The remaining `-EBUSY`/GEPHY-clock-stuck is a QCA8084 internal clock-state
+issue that needs **live register inspection to solve** - impossible on this
+unit (dead serial RX). **Ethernet is parked here.** Resume when either: a unit
+with a working serial console is available, or the QCA8084 consumer-device
+bring-up matures upstream (track PR #20604 / #20373). Everything else works:
+boot, eMMC, config@1, PWM LEDs, A/B factory-flash via LuCI + auto-recovery.
 
 Blind iteration is the only channel (this unit has **no usable serial RX** -
 only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
