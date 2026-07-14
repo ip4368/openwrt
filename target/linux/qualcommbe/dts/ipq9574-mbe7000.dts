@@ -465,6 +465,17 @@
 			 <&qca8k_uniphy1_tx312p5m>;
 		#clock-cells = <1>;
 		#reset-cells = <1>;
+		/*
+		 * Configure the SerDes/GEPHY system-clock RCG (parent XO -> 25 MHz).
+		 * The mainline qca8084 driver only programs switch_core and ahb in
+		 * package_clock_init and assumes the bootloader already parented
+		 * nss_cc_sys_clk_src; Linksys U-Boot does not, so srds1_sys/gephy*_sys
+		 * (both children of sys_clk_src) never spin up ("nss_cc_*_sys_clk
+		 * status stuck at off"). This is exactly what QSDK's
+		 * ssdk_mht_gcc_common_clk_parent_enable() does for MHT_SRDS0_SYS_CLK.
+		 */
+		assigned-clocks = <&qca8k_nsscc NSS_CC_SYS_CLK_SRC>;
+		assigned-clock-rates = <25000000>;
 	};
 
 	ethernet-phy-package@1 {

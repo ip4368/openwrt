@@ -811,6 +811,40 @@ calibration in interface_mode_init, before the port clocks in gcc_clock_init).
 Rebuilding (build_7). PR #23900 (qxgmii_set_speed + ppe reset loop fixes)
 confirmed already present in this base, so the traffic path is covered.
 
+### Boot log `_7`: failure -> `nss_cc_srds1_sys_clk stuck off`; found the keystone (2026-07-14)
+
+0363 flashed. Failure moved one call deeper again: `nss_cc_srds1_sys_clk status
+stuck at 'off'` at `qca8084_qxgmii_set_mode+0x34` -> `qca8084_pcs_set_mode`'s
+first op `clk_prepare_enable(PCS_CLK)` (= `nss_cc_srds1_sys_clk`). That branch's
+parent is **`nss_cc_sys_clk_src`** - and so is `gephy0..3_sys_clk` (the branch
+that failed `-EBUSY` back in the phy-reset-gpio-alone test). Same root every time.
+
+`nss_cc_sys_clk_src` (RCG cmd_rcgr 0x1a0) has one parent, `DT_XO` =
+`<&cmn_pll ETH0_50MHZ_CLK>`, and must be programmed to XO -> 25 MHz. **Mainline
+never configures it.** `package_clock_init` sets only switch_core (via APB_BRIDGE
+rate) and ahb; it assumes the bootloader already parented sys_clk_src. QSDK's
+`ssdk_mht_gcc_common_clk_parent_enable()` explicitly does
+`ssdk_mht_clk_parent_set(SRDS0_SYS, XO)` + `rate_set(25M)` before enabling the
+srds/gephy sys branches. Reference U-Boots do the equivalent; Linksys U-Boot does
+not -> sys_clk_src is unconfigured -> every sys branch is "stuck at off". CMN PLL
+itself is fine (DT has `assigned-clock-rates-u64 = 12 GHz`, vendor shows it
+locked), and the chip's MDIO register window works (the work-mode/LDO/fixup
+writes land), so this is specifically the sys-clock RCG never being parented.
+
+**Fix (DTS, no driver patch):** `NSS_CC_SYS_CLK_SRC` (id 85) is exposed as a
+clock, so configure it via the standard mainline mechanism on the `qca8k_nsscc`
+node:
+```
+assigned-clocks = <&qca8k_nsscc NSS_CC_SYS_CLK_SRC>;
+assigned-clock-rates = <25000000>;
+```
+This programs sys_clk_src (parent XO, /2 -> 25 MHz) at clock-controller probe,
+before the qca8084 phy driver needs the srds/gephy sys clocks - the keystone the
+whole nss_cc tree hangs off. Rebuilding (build_8). If it cascades, switch_core /
+mac (312.5) should follow once calibration produces the SerDes clock; if a *new*
+`sec_ctrl`-class clock is next, QSDK also parents MHT_SEC_CTRL_CLK to XO/25M and
+we'd add that too.
+
 Blind iteration is the only channel (this unit has **no usable serial RX** -
 only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
 a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:
