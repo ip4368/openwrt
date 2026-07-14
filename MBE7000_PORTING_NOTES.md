@@ -755,6 +755,40 @@ pull from the vendor UART boot log (ssdk `uniphy`/serdes lines) + QSDK ssdk
 source (`qca8084_interface_uniphy_mode_set` / serdes calibration). Vendor SSH at
 192.168.1.1 remains open for targeted known-good register reads.
 
+### FIX FOUND: it's a REORDER, not a port (2026-07-14, via QSDK + vendor UART)
+
+User supplied the vendor UART log (`~/openwrt_debug/vendor_boot.log`) and a QSDK
+mirror (`~/qsdk`, github.com/everything411/qsdk). Two things fell out:
+
+1. **Vendor U-Boot does NOT touch ethernet** (43 U-Boot lines, no phy/switch/mdio
+   init). The QCA8084 SerDes is brought up **in-kernel by ssdk** - so the fix
+   belongs in our phy driver, and the *same* stock U-Boot means our OpenWrt can't
+   rely on any pre-init.
+2. **QSDK `qca_mht_hw_init()` order** (`src/init/ssdk_mht.c`): `work_mode_init`
+   -> **`interface_mode_init` (SerDes calibration + uniphy QXGMII mode)** ->
+   `switch_reset` -> `switch_init` -> **`ssdk_mht_gcc_clock_init`**. The SerDes is
+   calibrated *before* the clock init. And QSDK's `mht_switch_core_pdata` uses the
+   **same** two sources as mainline (XO 50 MHz, UNIPHY1_TX312P5M) with switch_core
+   only supporting the 312.5 MHz rate - so mainline's source choice was never
+   wrong, only its **ordering**.
+
+Mainline already ships the entire SerDes bring-up: `qca8084_qxgmii_set_mode()`
+(`qca8084_serdes.c`) -> `qca8084_pcs_set_mode` -> **`qca8084_do_calibration`**.
+It uses plain MDIO (`mdiodev_c45_modify`) to the PCS/XPCS devices, so it does
+**not** depend on the package clocks - it can safely run before them. Mainline
+only calls it in `.config_init` (after `package_clock_init`), so on a cold board
+the clock init hangs first and the SerDes step is never reached.
+
+**Fix (patch 0362, extended):** in `qca8084_phy_package_probe_once()`, after
+work-mode + EPHY LDO and **before** `qca8084_package_clock_init()`, call
+`qca8084_qxgmii_set_mode(mdiodev[1], mdiodev[0])` (gated on QXGMII package mode).
+Exactly QSDK's serdes-before-clock order. `config_init_once` still re-runs it
+later; idempotent. This is a pure reorder of code mainline already has - no
+register tables ported. Rebuilding (build_6) for a flash test.
+
+Also confirmed via vendor dmesg + this analysis: the discrete WAN PHY at mdio
+0x1c is a **QCA8081** (`ethernet-phy-id004d.d101`, already fixed in DTS).
+
 Blind iteration is the only channel (this unit has **no usable serial RX** -
 only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
 a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:
