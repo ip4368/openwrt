@@ -437,15 +437,21 @@
 	status = "okay";
 	clock-frequency = <6250000>;
 	/*
-	 * QCA8084 GPIO reset. The mainline qca8084 driver's design is
-	 * "GPIO reset -> config sequence (work mode / EPHY LDO / package
-	 * clocks)". That config runs in .config_init, which on consumer boards
-	 * (Linksys U-Boot does NOT pre-init the switch) is too late - the
-	 * per-PHY probe fails first with -EBUSY/-110. Paired with a driver patch
-	 * that moves the config into package_probe_once (before per-PHY access),
-	 * so plain reset-gpios is correct here. See MBE7000_PORTING_NOTES.md.
+	 * QCA8084 reset. IMPORTANT: this is phy-reset-gpio, NOT reset-gpios,
+	 * and the difference is load-bearing on this board. Empirically (see
+	 * MBE7000_PORTING_NOTES.md truth table): mainline's MDIO core acts on
+	 * reset-gpios and pulses gpio60 low during bus registration, which on
+	 * this board KILLS the QCA8084's fixed 0x10-0x1f register window - every
+	 * subsequent config write is a silent MDIO-C22 no-op and the PHYs never
+	 * respond (phy_poll_reset -110, on-chip nsscc clocks stuck). Linksys
+	 * U-Boot leaves gpio60 high (chip out of reset) and mainline must NOT
+	 * disturb it. phy-reset-gpio is a QSDK property mainline does not read,
+	 * so it documents the pin while leaving U-Boot's state intact. The
+	 * chip's real bring-up (work mode / EPHY LDO / package clock tree) is
+	 * done by driver patch 0362 in qca8084_phy_package_probe_once(), before
+	 * any per-PHY access - which is what U-Boot skips on consumer boards.
 	 */
-	reset-gpios = <&tlmm 60 GPIO_ACTIVE_LOW>;
+	phy-reset-gpio = <&tlmm 60 GPIO_ACTIVE_LOW>;
 
 	qca8k_nsscc: clock-controller@18 {
 		compatible = "qcom,qca8084-nsscc";

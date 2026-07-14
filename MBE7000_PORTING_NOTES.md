@@ -647,6 +647,58 @@ add the XPCS `qca8084_qxgmii_set_speed()` fix; (fail) boot log shows the next
 register step - vendor SSH (192.168.1.1, pw in chat) still open as known-good
 reference. If it works, the build_dir edit is already captured as patch 0362.
 
+### 0362 flashed (boot log `_4`): still `-110` - but it isolated the variable (2026-07-14)
+
+Flashed the `reset-gpios` + `0362` image. Result: **still `phy_poll_reset
+failed: -110` at `90000.mdio-1:01`**, and now the on-chip `nss_cc_*` clocks are
+"stuck at **on**" during `clk_disable_unused` (clk_branch2_disable can't confirm
+the disable). That "stuck" pattern is the tell: **the QCA8084 register window is
+not responding at all.** Re-reading the driver made it obvious why moving config
+into probe_once didn't help *with reset-gpios*:
+
+- The chip's config interface is a **fixed MDIO window at 0x10-0x1f**
+  (`LOW_ADDR_PREFIX=0x10`, `HIGH_ADDR_PREFIX=0x18`), and every `qca8084_mii_*`
+  write is a plain **MDIO C22 write, which returns 0 whether or not the chip
+  ACKs**. So 0362's work-mode / LDO / clock-init writes *silently succeed* even
+  when the window is dead -> probe_once "passes", but nothing was programmed ->
+  PHYs never move to addr 1-4 -> `phy_poll_reset -110`.
+- With `reset-gpios`, mainline's MDIO core **pulses gpio60 low during bus
+  registration**, and that pulse is what kills the 0x10-0x1f window (Linksys
+  U-Boot init is lost, mainline never re-inits). Confirmed by the nsscc clocks
+  reading "stuck on".
+
+**The two variables were always coupled.** Full truth table now:
+
+| `&mdio` reset          | 0362 | result                                        |
+|------------------------|------|-----------------------------------------------|
+| reset-gpios            | no   | -110 (window dead)                            |
+| reset-gpios + delays   | no   | -110 (timing ruled out)                       |
+| phy-reset-gpio         | no   | -EBUSY, gephy0_sys_clk stuck (**window ALIVE**)|
+| reset-gpios            | yes  | -110 (log `_4`; window dead, writes no-op)    |
+| **phy-reset-gpio**     | **yes** | **UNTESTED <- this build**                  |
+
+`phy-reset-gpio` is the only config that kept the window alive; it only failed
+because the GEPHY power-up hadn't run before per-PHY access - which is exactly
+what 0362 adds in probe_once. So `phy-reset-gpio` + `0362` is the predicted-good
+combination and the one empty cell. **Change (2026-07-14):** DTS `&mdio` reset
+flipped `reset-gpios` -> `phy-reset-gpio = <&tlmm 60 GPIO_ACTIVE_LOW>`; 0362 kept
+as-is. Rebuilding for a flash test. `config_init_once` (incl. the QXGMII PCS
+`qca8084_qxgmii_set_mode`) still runs after per-PHY probe, so 0362 need not
+replicate it.
+
+**BUILT (2026-07-14), awaiting flash.** Verified the compiled DTB carries
+`phy-reset-gpio = <&tlmm 60 GPIO_ACTIVE_LOW>` on `mdio@90000` (no `reset-gpios`
+on the bus node). Test factory image:
+`bin/targets/qualcommbe/ipq95xx/openwrt-qualcommbe-ipq95xx-linksys_mbe7000-squashfs-factory.bin`
+sha256 `a01885588ed11fc4391b4346f7d52a0abb4fb0d17d7dcde8dd6b275c055f3d3f`.
+Flash via LuCI (-> inactive slot -> power-cycle), capture serial TX log `_5`.
+Win: no `-110`/`-EBUSY`, `QCA8084 ...:01-:04` PHYs probe, `lan1-4` up.
+
+Note: serial is **read-only** (device TX only; RX pad dead) so `/dev/ttyUSB0` +
+tio can *capture* the boot log but cannot type - no live poking of the failing
+OpenWrt. Interactive debugging still goes through vendor-firmware SSH (other A/B
+slot) as the known-good reference.
+
 Blind iteration is the only channel (this unit has **no usable serial RX** -
 only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
 a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:
