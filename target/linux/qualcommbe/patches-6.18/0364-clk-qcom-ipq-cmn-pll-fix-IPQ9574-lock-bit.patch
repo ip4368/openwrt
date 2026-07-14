@@ -1,0 +1,40 @@
+From: Daniel Ip <kg4368@yahoo.com.hk>
+Date: Mon, 14 Jul 2026 15:05:00 +0100
+Subject: [PATCH] clk: qcom: ipq-cmn-pll: use correct lock bit on IPQ9574
+
+clk_cmn_pll_set_rate() polls the PLL lock status in bit 8
+(CMN_PLL_CLKS_LOCKED = BIT(8)) of register 0x64. On IPQ9574 the lock is
+reported in bit 2, not bit 8. Verified on a live IPQ9574 (Linksys
+MBE7000): the working vendor firmware leaves 0x9b064 = 0x7 (bits [2:0]
+set, bit 8 clear). Both QSDK ssdk (CMN_PLL_LOCKED = 0x4) and Qualcomm
+U-Boot check bit 2.
+
+With BIT(8) the lock poll always times out (-ETIMEDOUT). On the RDP
+reference boards this is masked (the error is non-fatal and their U-Boot
+has already brought up the downstream nss_cc clock tree from the PLL
+output), but on a consumer board whose bootloader does not pre-init the
+switch clocks the CMN PLL output is treated as not-ready and the QCA8084
+nss_cc RCGs (sys_clk_src etc.) fail to update.
+
+Signed-off-by: Daniel Ip <kg4368@yahoo.com.hk>
+---
+--- a/drivers/clk/qcom/ipq-cmn-pll.c
++++ b/drivers/clk/qcom/ipq-cmn-pll.c
+@@ -57,7 +57,16 @@
+ #define CMN_PLL_REFCLK_SRC_DIV			GENMASK(9, 8)
+ 
+ #define CMN_PLL_LOCKED				0x64
+-#define CMN_PLL_CLKS_LOCKED			BIT(8)
++/*
++ * The CMN PLL lock status on IPQ9574 is reported in bit 2 of reg 0x64, not
++ * bit 8. Confirmed against a live IPQ9574 (Linksys MBE7000): the working
++ * vendor firmware leaves 0x9b064 = 0x7 (bits [2:0] set, bit 8 clear), and
++ * both QSDK ssdk (CMN_PLL_LOCKED = 0x4) and Qualcomm U-Boot use bit 2.
++ * Polling BIT(8) makes clk_cmn_pll_set_rate() time out (-ETIMEDOUT) even
++ * though the PLL is locked; on a consumer board whose bootloader has not
++ * pre-brought-up the downstream nss_cc clock tree this is fatal.
++ */
++#define CMN_PLL_CLKS_LOCKED			BIT(2)
+ 
+ #define CMN_PLL_POWER_ON_AND_RESET		0x780
+ #define CMN_ANA_EN_SW_RSTN			BIT(6)

@@ -845,6 +845,36 @@ mac (312.5) should follow once calibration produces the SerDes clock; if a *new*
 `sec_ctrl`-class clock is next, QSDK also parents MHT_SEC_CTRL_CLK to XO/25M and
 we'd add that too.
 
+### Boot log `_8` -> ROOT CAUSE: mainline CMN PLL lock-bit is wrong on IPQ9574 (2026-07-14)
+
+`assigned-clocks` fired at nsscc probe (1.07s) and the RCG update FAILED:
+`nss_cc_sys_clk_src: rcg didn't update` (trace `of_clk_set_defaults ->
+clk_rcg2_set_rate -> update_config`, x24=0x17d7840=25 MHz). An RCG can't update
+unless its **source (the 50 MHz `ETH0_50MHZ` from the CMN PLL) is running** - so
+the 50 MHz reference isn't reaching the chip. Chased it to the CMN PLL driver:
+
+**`drivers/clk/qcom/ipq-cmn-pll.c` polls the wrong lock bit.**
+`clk_cmn_pll_set_rate()` waits on `CMN_PLL_CLKS_LOCKED = BIT(8)` at reg 0x64. On
+IPQ9574 the lock is **bit 2**, not bit 8:
+- Live vendor read (x3): `0x9b064 = 0x00000007` (bits [2:0] set, **bit 8 clear**)
+  while ethernet works.
+- QSDK `ssdk_clk.c`: `#define CMN_PLL_LOCKED 0x4` (BIT(2)).
+- Qualcomm U-Boot (`ipq5018.c`): same `CMN_PLL_LOCKED 0x4` at `0x9B064`.
+
+So mainline's lock poll **always times out** -> `clk_cmn_pll_set_rate` returns
+`-ETIMEDOUT`. RDP reference boards mask this (non-fatal via `of_clk_set_defaults`,
+PLL physically locks on bit 2 anyway, and their U-Boot already parented the
+downstream nss_cc tree off the output); our consumer board, which needs Linux to
+bring that tree up, does not.
+
+**Fix (patch 0364):** `CMN_PLL_CLKS_LOCKED` BIT(8) -> BIT(2). Genuine upstream
+IPQ9574 bug, not MBE7000-specific - upstreamable on its own. Kept the
+`assigned-clocks` sys_clk_src config to test whether, with the PLL now reported
+locked, the RCG updates. Rebuilding (build_9). If sys_clk_src configures now,
+expect the cascade (srds/gephy sys -> calibration -> 312.5 -> switch_core/mac ->
+PHYs probe). If it still fails, the sys config runs too early (before probe_once
+powers the chip) and must move into the driver.
+
 Blind iteration is the only channel (this unit has **no usable serial RX** -
 only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
 a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:
