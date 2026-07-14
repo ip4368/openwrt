@@ -789,6 +789,28 @@ register tables ported. Rebuilding (build_6) for a flash test.
 Also confirmed via vendor dmesg + this analysis: the discrete WAN PHY at mdio
 0x1c is a **QCA8081** (`ethernet-phy-id004d.d101`, already fixed in DTS).
 
+### Boot log `_6`: WAN QCA8081 works; LAN failure moved one call deeper (2026-07-14)
+
+Flashed 0362-with-serdes-reorder. Two results:
+- **WAN QCA8081 now binds correctly:** `wan: PHY [90000.mdio-1:1c] driver
+  [Qualcomm QCA8081]`, `configuring for inband/usxgmii link mode`. The DTS
+  compatible fix works.
+- **LAN failure moved from `package_clock_init` into `qca8084_qxgmii_set_mode`:**
+  `nss_cc_mac1_rx_clk_src: rcg didn't update` at `qca8084_qxgmii_set_mode+0x40`
+  -> QCA8084 :01-:04 fail -16. So the early qxgmii_set_mode call runs, but its
+  FIRST step, `qca8084_xpcs_clock_parent_set()`, reparents mac*_rx/tx_clk_src
+  onto the 312.5 MHz SerDes root - which still isn't running because
+  `qca8084_pcs_set_mode()`'s calibration runs AFTER it, later in the same
+  function. Ordering bug *inside* qxgmii_set_mode.
+
+**Fix (patch 0363):** swap the two calls in `qca8084_qxgmii_set_mode()` so
+`qca8084_pcs_set_mode` (SerDes calibration) runs before
+`qca8084_xpcs_clock_parent_set` (clock reparenting). Calibration doesn't depend
+on the reparenting, so it's safe on all boards, and matches QSDK (all SerDes
+calibration in interface_mode_init, before the port clocks in gcc_clock_init).
+Rebuilding (build_7). PR #23900 (qxgmii_set_speed + ppe reset loop fixes)
+confirmed already present in this base, so the traffic path is covered.
+
 Blind iteration is the only channel (this unit has **no usable serial RX** -
 only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
 a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:

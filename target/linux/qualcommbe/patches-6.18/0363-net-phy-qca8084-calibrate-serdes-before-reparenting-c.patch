@@ -1,0 +1,53 @@
+From: Daniel Ip <kg4368@yahoo.com.hk>
+Date: Mon, 14 Jul 2026 14:20:00 +0100
+Subject: [PATCH] net: phy: qca8084: calibrate SerDes before reparenting port
+ clocks
+
+qca8084_qxgmii_set_mode() reparents the XPCS/MAC port clocks onto the
+UNIPHY1 312.5 MHz SerDes output (qca8084_xpcs_clock_parent_set) BEFORE it
+calibrates the SerDes (qca8084_pcs_set_mode -> qca8084_do_calibration).
+The 312.5 MHz clock does not physically exist until calibration runs, so
+on boards whose bootloader did not pre-calibrate the SerDes (e.g. the
+consumer Linksys MBE7000, whose U-Boot does not init ethernet at all) the
+clk_set_parent() triggers an RCG update that never completes:
+"nss_cc_mac1_rx_clk_src: rcg didn't update its configuration" -> the four
+QCA8084 PHYs fail probe with -16.
+
+Reference boards (RDP / TP-Link BE800) tolerate the current order only
+because their U-Boot already calibrated the SerDes. Calibration does not
+depend on the clock reparenting, so performing it first is correct on all
+boards and matches QSDK, which completes all SerDes calibration
+(qca_mht_interface_mode_init) before configuring the port clocks
+(ssdk_mht_gcc_clock_init). Just swap the two calls.
+
+Signed-off-by: Daniel Ip <kg4368@yahoo.com.hk>
+---
+--- a/drivers/net/phy/qcom/qca8084_serdes.c
++++ b/drivers/net/phy/qcom/qca8084_serdes.c
+@@ -622,11 +622,24 @@
+ {
+ 	int ret;
+ 
+-	ret = qca8084_xpcs_clock_parent_set(xpcs_mdiodev, pcs_mdiodev);
++	/*
++	 * Calibrate the SerDes (qca8084_pcs_set_mode -> qca8084_do_calibration,
++	 * which brings up the UNIPHY1 312.5 MHz output) BEFORE reparenting the
++	 * XPCS/MAC clocks onto it. qca8084_xpcs_clock_parent_set() switches the
++	 * mac*_rx/tx_clk_src RCGs to the 312.5 MHz SerDes root, which does not
++	 * physically exist until calibration has run - so on boards whose
++	 * bootloader did not pre-calibrate the SerDes (e.g. Linksys MBE7000) the
++	 * original order fails with "nss_cc_mac1_rx_clk_src: rcg didn't update".
++	 * Reference boards tolerate the reverse order only because U-Boot already
++	 * calibrated the SerDes. Calibration does not depend on the reparenting,
++	 * so doing it first is safe everywhere (and matches QSDK, which runs all
++	 * SerDes calibration before touching the port clocks).
++	 */
++	ret = qca8084_pcs_set_mode(xpcs_mdiodev, pcs_mdiodev);
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = qca8084_pcs_set_mode(xpcs_mdiodev, pcs_mdiodev);
++	ret = qca8084_xpcs_clock_parent_set(xpcs_mdiodev, pcs_mdiodev);
+ 	if (ret)
+ 		return ret;
+ 
