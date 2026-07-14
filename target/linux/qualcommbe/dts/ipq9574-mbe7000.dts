@@ -670,15 +670,15 @@
 	};
 
 	/*
-	 * Discrete WAN PHY (raw mdio bus address 0x1c in the vendor
-	 * firmware dump), reset via a second gpio (tlmm 36) separate from
-	 * the switch package's own reset above. Modeled as a generic
-	 * clause-45 PHY the way qcom_rdp433 wires its discrete AQR PHYs;
-	 * the exact chip/compatible still needs confirming on real
-	 * hardware (e.g. via boot log once serial console works).
+	 * Discrete WAN PHY at mdio bus address 0x1c, reset via a second gpio
+	 * (tlmm 36) separate from the switch package's reset above. Confirmed a
+	 * Qualcomm QCA8081 (single-port 2.5G) via the vendor QSDK boot log,
+	 * which registers "qca808x phydev 90000.mdio:1c" - handled by the same
+	 * qca808x driver as the QCA8084's internal PHYs. (Was a generic c45
+	 * placeholder; see MBE7000_PORTING_NOTES.md vendor-SSH section.)
 	 */
 	phy4: ethernet-phy@1c {
-		compatible = "ethernet-phy-ieee802.3-c45";
+		compatible = "ethernet-phy-id004d.d101";
 		reg = <0x1c>;
 		reset-gpios = <&tlmm 36 GPIO_ACTIVE_LOW>;
 	};

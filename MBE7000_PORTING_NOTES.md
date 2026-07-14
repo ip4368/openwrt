@@ -699,6 +699,62 @@ tio can *capture* the boot log but cannot type - no live poking of the failing
 OpenWrt. Interactive debugging still goes through vendor-firmware SSH (other A/B
 slot) as the known-good reference.
 
+### `phy-reset-gpio` + 0362 flashed (boot log `_5`): -110 GONE, new deeper blocker (2026-07-14)
+
+The predicted-good cell. Result: **`-110` is gone** - `phy-reset-gpio` kept the
+chip register window alive and `probe_once` now runs deep into
+`qca8084_package_clock_init`. New failure there:
+```
+nss_cc_switch_core_clk_src: rcg didn't update its configuration   <- package_clock_init+0x28
+nss_cc_apb_bridge_clk status stuck at 'off'                       <- package_clock_init+0x78
+QCA8084 90000.mdio-1:01..:04 ... failed with error -16 (EBUSY)
+mdio_bus 90000.mdio-1:06: Get PCS reset failed
+```
+An RCG that "didn't update" = **its selected source clock isn't physically
+running**. `nss_cc_switch_core_clk_src` (cmd_rcgr 0x0, `clk_rcg2_mux_closest_ops`)
+has only two parents: `P_XO` (DT_XO = `<&cmn_pll ETH0_50MHZ_CLK>`, 50 MHz) and
+`P_UNIPHY1_TX312P5M` (`<&qca8k_uniphy1_tx312p5m>`, 312.5 MHz). `package_clock_init`
+does `clk_set_rate(APB_BRIDGE, 312.5MHz)`, so the mux picks the 312.5 MHz parent -
+which is the QCA8084's **own internal uniphy1 SerDes clock**, and in our DTS is a
+`fixed-clock` (always-on *to the framework*, but physically absent until the chip
+SerDes is initialised). Reference boards' U-Boot inits that SerDes; Linksys
+U-Boot does not -> the fixed-clock "lies", the RCG locks to a dead source and
+never updates -> switch_core/apb_bridge never start -> `-16`.
+
+### Vendor-QSDK SSH deep dump (2026-07-14) - root cause pinned, uniphy ruled in
+
+Root SSH into the working vendor firmware (`192.168.1.1`, Linux 5.4.213). Saved:
+`~/openwrt_debug/vendor_qsdk_dump_2026-07-14.txt`. Findings:
+- **QCA8084 is on SoC UNIPHY0** (`pcs0`/`ethernet-pcs@7a00000`), matching our DTS
+  (`pcs-handle = <&pcs0_ch0..3>`). Vendor `clk_summary`: `uniphy0_gcc_tx/rx`
+  ENABLED (cnt 2) @125 MHz; `uniphy1`/`uniphy2` DISABLED (cnt 0). Vendor dmesg:
+  **`ssdk_clock_rate_set_and_enable: UNIPHY 1 is not available on this SKU!`**.
+  So the SoC-side uniphy wiring is CORRECT - not the bug.
+- **CMN PLL locked & identically configured** (0x9b064=0x07, 0x9b784=0x8017) -
+  PLL/50 MHz ref ruled out (again).
+- **Vendor never models the QCA8084's internal clock tree in Linux** - ssdk pokes
+  it over MDIO directly. So mainline's whole `nsscc-qca8k` model
+  (switch_core sourced from the internal 312.5 MHz uniphy1) is a *mainline-only*
+  construct that assumes the chip SerDes is already up.
+- **WAN PHY @0x1c is a QCA8081**, not a generic c45 PHY - vendor dmesg registers
+  `qca808x phydev 90000.mdio:1c`. Fixed our DTS `phy4` compatible ->
+  `ethernet-phy-id004d.d101` (evidence-based; untestable until LAN works).
+
+**Refined root cause (LAN):** The stock Linksys U-Boot (same for vendor fw and
+our OpenWrt) does **not** bring up the QCA8084's internal SerDes/uniphy1. The
+vendor QSDK ssdk does it in-kernel; mainline's qca8084 phy driver does **not** -
+it assumes a pre-inited SerDes (RDP/BE800 U-Boots do it). So on this consumer
+board `package_clock_init` deadlocks trying to clock switch_core from a SerDes
+that isn't running. This is the upstream-frontier gap the notes predicted.
+
+**Next experiment (scoped):** replicate the QSDK QCA8084 SerDes/uniphy1 init in
+`qca8084_phy_package_probe_once()` *before* `package_clock_init`, OR make
+switch_core source from XO (50 MHz) so the AHB/register core comes up independent
+of the SerDes (defer SerDes to the PCS driver). Need the exact QSDK sequence -
+pull from the vendor UART boot log (ssdk `uniphy`/serdes lines) + QSDK ssdk
+source (`qca8084_interface_uniphy_mode_set` / serdes calibration). Vendor SSH at
+192.168.1.1 remains open for targeted known-good register reads.
+
 Blind iteration is the only channel (this unit has **no usable serial RX** -
 only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
 a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:
