@@ -2033,3 +2033,22 @@ the vendor OTA to the inactive slot also flips BOOTCONFIG to slot 2 by itself.)
 4. Only after that, look at real partition names/layout before ever
    trying `sysupgrade` or factory flashing.
 5. Update this file and the DTS as facts get confirmed or corrected.
+
+## 5 GHz DFS / regulatory (ath12k) — diagnosed 2026-07-17 [NOT FIXED, parked]
+Symptom: 5 GHz "auto channel" shows channel 0 / AP won't start when a country is set.
+ROOT CAUSE (not a DFS bug): ath12k gets NO valid reg rules from the QCN6274 firmware for
+any *set* country -> "No reg rules available" (wmi.c ath12k_pull_reg_chan_list_ext: 
+total_reg_rules==0) -> "Timeout while waiting for regulatory update" -> driver falls back
+to its built-in US default. hostapd(country)/driver(US) mismatch -> DFS CAC on the
+ACS-picked DFS channel fails (start_dfs_cac -1). 2.4G/6G/5G-UNII1 work because they need
+no DFS CAC. Tested GB, DE, HK -> ALL fail (reg stays US).
+WHY: ath12k loads the regdb from INSIDE board-2.bin (ATH12K_BD_IE_REGDB); our board-2.bin's
+embedded regdb is a stub/wrong (only satisfied the loader, yields 0 rules for every country).
+The vendor firmware is an APAC/HK variant: it ships per-region regdb qcn9224/{AH,AU,HK,SG}/
+regdb.bin (25656 B) - NO GB/EU. So GB can NEVER work on this fw; correct country = HK.
+FIX (when revisited): rebuild the ath12k board-2.bin embedding the real vendor
+qcn9224/HK/regdb.bin (pulled to scratchpad/vregdb; also on vendor rootfs mmcblk0p29
+/lib/firmware/qcn9224/HK/regdb.bin) via the ATH12K-magic bdencoder, set country HK, retest
+(iw phy1 reg get should show HK, DFS CAC should proceed). ath11k 2.4G analog: IPQ9574/HK.
+IMMEDIATE WORKAROUND (no rebuild): 5 GHz on a non-DFS channel <=80 MHz (ch 36/40/44/48,
+htmode EHT80) - comes up without CAC regardless of the regdb issue.

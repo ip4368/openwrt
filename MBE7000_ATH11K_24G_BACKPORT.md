@@ -227,9 +227,18 @@ wan=+1, 2.4G=+2, [5G=+3, 6G=+4 reserved].
 - 2.4G (ath11k): the 11-ath11k-caldata hotplug now also patches the caldata MAC via
   ath11k_patch_mac "$(macaddr_add base 2)" 0 + ath11k_set_macflag. Verified on clean
   flash: phy0 = 80:69:1a:b2:c1:09.
-- 5/6G (ath12k): STILL default (00:03:7f:...) - ath12k has NO caldata-patch hook like
-  ath11k; its MAC comes from board-2.bin/OTP/QMI. TODO: a DTS local-mac-address/nvmem
-  on the QCN9274 wifi node, or a board-2.bin MAC field. Separate (harder) task.
+- 5/6G (ath12k): DONE 2026-07-17. ath12k has NO caldata-patch hook and does NOT read a
+  DT/nvmem MAC (confirmed in mac.c - perm_addr comes from QMI/firmware only). Device-level
+  `option macaddr` on the wifi-device did NOT work; the wifi-IFACE `option macaddr` DOES
+  (overrides the AP BSSID). So base-files/etc/hotplug.d/ieee80211/13-mbe7000-wifi-macs
+  (runs after 10-wifi-detect) sets macaddr on the 5g iface (base+3) and 6g iface (base+4)
+  from devinfo, then restarts those radios via `ubus network.wireless down/up` (a plain
+  `wifi reload` does NOT change a running BSSID - the vif must be recreated). Verified on
+  reboot: 5G=...0a, 6G=...0b automatically. NOTE: sets the BSSID (what clients see / label
+  match); the phy "permanent address" stays the Atheros default (cosmetic). For MLO, set
+  macaddr on the MLD iface instead.
+FINAL MAC MAP (all automatic, per-device from devinfo base ...:07):
+  lan ...07, wan ...08, 2.4G ...09 (ath11k caldata), 5G ...0a, 6G ...0b (ath12k hotplug).
 
 ## 7b. RESULT - 2.4 GHz WORKS on HW (2026-07-17)
 Full bring-up validated live. Boot sequence (all clean): remoteproc0 q6wcss boots
