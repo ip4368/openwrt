@@ -8,6 +8,52 @@ DT properties against the drivers. A code review on 2026-07-11 found a
 driver-level bug that a compile cannot catch (wrong PPE clock/reset names)
 plus other gaps; see "Post-review fixes" below.
 
+## ⚠️ 2026-07-15 — MAJOR CHIP-IDENTITY CORRECTION (LAN is QCA8075, NOT QCA8084)
+
+The entire prior ~15-flash effort assumed the LAN was a **QCA8084** (Manhattan
+2.5G switch-PHY, 10G-QXGMII, internal nss_cc-qca8k, XPCS/PCS SerDes bring-up).
+**That was wrong** - inherited uncritically from the initial Sonnet port's DTS
+and never checked against hardware. Re-derived the chip identity from
+non-circular sources (our own DTS is NOT evidence):
+
+| Source of truth | Reads |
+|---|---|
+| U-Boot raw PHY-ID read (`failed_boot_MBE70.log:44-64`) | `004d.d0b1` **and** `004d.d101` |
+| Vendor QSDK kernel driver probe (`vendor_boot.log:348,350`) | **`malibu`** + **`qca808x`** - never manhattan/qca8084 |
+| Vendor clk_summary | uniphy0 @ **125 MHz** (gigabit PSGMII), not 312.5 MHz |
+| Authoritative ID tables (QSDK `nss_macsec.h`, mainline `qca80{7,8}x.c`) | d0b1=**QCA8075**, d101=**QCA8081**, d180=QCA8084 (never seen on HW) |
+
+**Conclusion: LAN = QCA8075 (Malibu quad GIGABIT PHY, PSGMII on UNIPHY0,
+ports 1-4). WAN = QCA8081 (2.5G, port 6 / UNIPHY2). No QCA8084 exists on
+this board.** (Also ruled out an "Aquantia @0x1c" guess from another agent -
+the vendor binds `qca808x` to 0x1c and U-Boot reads `004d.d101`; nothing
+Aquantia, `03a1.*`, anywhere. The "usxgmii" phy-mode is what misled that guess.)
+
+### The pivot done this session (DTS-only; kernel patches untouched)
+Rewrote `ipq9574-mbe7000.dts` to the **IPQ9574 RDP433 model** (which is exactly
+this board's LAN topology). This is LOW risk because **WAN already works today
+through `qcom_ppe`->`pcs2`->`nsscc`->`cmn_pll`** - proving that whole SoC
+ethernet stack is functional; LAN just needed the right PHY package + mode:
+- Ports 1-4: `phy-mode = "qsgmii"` + `managed = "in-band-status"`, on `pcs0_ch0-3`.
+- `&mdio`: replaced the entire qca8084 apparatus (qca8k_nsscc / qca8084-package /
+  xpcs-phy / pcs-phy / 312.5MHz fixed-clocks) with a single
+  `ethernet-phy-package@10` `compatible = "qcom,qca8075-package"`,
+  `qcom,package-mode = "qsgmii"`, PHYs at 0x10-0x13. WAN phy4@0x1c unchanged.
+- Kept the **gpio60 gpio-hog** (renamed `lan_phy_reset_hog`) - still the critical
+  bring-up requirement; proven to bring the LAN package alive on MDIO.
+- Config already enables the path: `QCOM_PPE=m`, `PCS_QCOM_IPQ9574=m`,
+  `IPQ_CMN_PLL=y`, `IPQ_NSSCC_9574=y`, `QCA807X_PHY=y`. DTS pre-check with dtc: clean.
+- Driver support verified: `qca807x.c` binds child PHYs by ID `004d.d0b1` and
+  parses `qcom,package-mode` (line ~547) + runs PQSGMII package init.
+
+**Still-dormant cleanup (do AFTER LAN confirmed, so as not to destabilise the
+working CMN-PLL/WAN state):** the qca8084 driver patches (0301-0312) and our
+custom debug patches (0362 cold-init, 0363 serdes-calibrate, build_dir
+`qca8084_serdes.c` edits) are now inert - no DT node references them - but
+should be stripped when folding to patches. Keep CMN-PLL patches 0364/0365
+(the PPE/uniphy path needs a correct PLL). Also remove the WAN-debug
+uci-default before release.
+
 ## Summary
 
 - SoC: Qualcomm IPQ9554 (per the user; the reference design and vendor
@@ -875,12 +921,519 @@ expect the cascade (srds/gephy sys -> calibration -> 312.5 -> switch_core/mac ->
 PHYs probe). If it still fails, the sys config runs too early (before probe_once
 powers the chip) and must move into the driver.
 
+### Boot log _9 verdict (BIT(2) fix flashed) - CMN PLL was NOT the blocker
+
+`MBE70_upgrade_boot_9.log` is **byte-for-byte identical** to _8 at the failure:
+`1.240s nss_cc_sys_clk_src: rcg didn't update` -> `1.751s nss_cc_srds1_sys_clk
+status stuck at 'off'` -> `1.90s qca8084_qxgmii_set_mode -16`. The BIT(2) patch
+DID compile in (no CMN PLL lock timeout / no assigned-clock error at cmn_pll
+probe now, vs the theory), so the lock bit is genuinely fixed - but it changed
+nothing here. **The CMN PLL lock bit was a real latent upstream bug, not the
+cause of the LAN failure.** Keep patch 0364 (still correct, upstreamable), but
+the diagnosis in the block above was wrong about it being the root.
+
+**Corrected root cause (high confidence):** `nss_cc_sys_clk_src` (RCG 0x1a0) has
+*exactly one* possible source, `P_XO` (`ftbl_nss_cc_sys_clk_src = F(25000000,
+P_XO, 2, ...)`, `nss_cc_xo_map` has only `{P_XO, 0}`). The RCG update handshake
+only completes when the **selected source is physically toggling**. The source
+is `DT_XO = <&cmn_pll ETH0_50MHZ_CLK>` - the SoC's 50 MHz reference delivered to
+the QCA8084's XO input pin. So "rcg didn't update" means **the 50 MHz is not
+reaching the QCA8084's XO pin.** The chip itself is alive and reachable: the
+driver reads the CMD_UPDATE bit back (=1, never self-clears), so MDIO R/W to the
+nss_cc window works; only the reference clock is absent. `nss_cc_qca8k_probe`
+already does `devm_clk_get_enabled(dev, NULL)` on clocks[0] = `ETH0_50MHZ_CLK`,
+so the CMN PLL output *gate* is enabled from Linux - yet the clock still isn't
+at the pin.
+
+Key contradiction to resolve: the **vendor QSDK firmware works on the same board
+and same Linksys U-Boot** with LAN up, so the board CAN deliver this 50 MHz.
+Something openwrt does (or fails to do) leaves the chip without its XO. QSDK's
+ssdk treats `MHT_XO_CLK_RATE_50M` as an always-present external given and never
+sets up a SoC->chip clock - so on the vendor it is delivered by U-Boot/board
+hardware and stays up. Candidates for the openwrt-specific regression:
+ (a) a board-level enable (GPIO/LDO/load-switch powering the QCA8084's 50 MHz
+     oscillator or the SoC clock-output pad) that vendor drives and we don't;
+ (b) the SoC 50 MHz clock-output *pinmux* (TLMM) that U-Boot sets but openwrt's
+     pinctrl/gcc reverts;
+ (c) openwrt's `clk_cmn_pll_set_rate` block reset (`CMN_ANA_EN_SW_RSTN` toggle)
+     re-initialising a PLL U-Boot already configured and not restoring the eth
+     output the way U-Boot did.
+Next: get **ground-truth vendor register/GPIO data over SSH** (see diagnostic
+below) rather than guess a 7th time. Specifically need: vendor GPIO states
+(which pins are driven that our DTS doesn't), CMN PLL page dump (0x9b000), and
+whether the QCA8084 XO is SoC-sourced or a discrete board crystal.
+
+### ROOT CAUSE FOUND (vendor SSH diagnostic) - CMN PLL output clocks ungated
+
+Dumped the working vendor firmware live (`~/openwrt_debug/vendor_diag_out.txt`,
+`vendor_diag.sh`). The QCA8084's XO **is** the SoC CMN PLL `eth0-50mhz` output
+(no discrete crystal). The decisive difference is a **single register the
+mainline `ipq-cmn-pll.c` never writes**:
+
+QSDK's `qca_cmn_clk_config()` (in `qca/src/linux-5.4/drivers/net/phy/mdio-qca.c`,
+the "CMN clock reset done" logged at vendor boot) does THREE things to the CMN
+PLL: (1) select refclk (0x784), (2) reset the block (0x780, `CMN_ANA_EN_SW_RSTN`),
+and **(3) ungate the fixed output clocks at `CMN_PLL_OUTPUT_RELATED_1` = 0x79c**
+(`CMN_PLL_CLK25M_EN` BIT15, `CLK50M_62P5M_EN/EN1/EN2` BIT11/10/14). Mainline's
+driver does (1) and (2) and the lock poll, but **never touches 0x79c** - it
+assumes the bootloader already ungated the outputs (true on RDP, false on
+Linksys). So `eth0-50mhz` is produced internally but not driven out to the
+QCA8084's XO pin -> the switch's `nss_cc_sys_clk_src` RCG (only parent = that XO)
+can never update -> entire switch clock tree dead. Exactly the _8/_9 symptom.
+
+Vendor register proof (`devmem`):
+- `0x9b064 = 0x07` (locked, bit 2 - confirms the 0364 lock-bit fix too)
+- `0x9b784 = 0x8017` (refclk: internal, index 7 = 48 MHz - same as mainline)
+- **`0x9b79c = 0xfc00`** (GENMASK(15,10) all set: 25 MHz + 50/62.5 MHz taps ON)
+
+**Fix (patch 0365):** after the lock poll in `clk_cmn_pll_set_rate()`,
+`regmap_update_bits(0x79c, GENMASK(15,10), GENMASK(15,10))`. Reproduces the
+vendor's `0x9b79c = 0xfc00`. Upstreamable alongside 0364 (both are IPQ9574 CMN
+PLL cold-bring-up bugs mainline masks by relying on the RDP bootloader).
+
+Note the earlier `_8` diagnosis block above (blaming the lock bit) was wrong
+about the *cause* - 0364 is a real bug but the missing 0x79c ungate (0365) is
+what actually starves the QCA8084. Both patches are kept.
+
+GPIO cross-check (vendor `/sys/kernel/debug/gpio`): gpio60 `out high` (QCA8084
+out of reset) and gpio36 `out high` (WAN PHY) match our DTS; no extra
+clock/LDO-enable GPIO that we were missing - the gap was purely the 0x79c gate.
+
+**Build note / gotcha:** adding a new patch file to `patches-6.18/` invalidates
+the kernel `.prepared` stamp, so the next `make target/linux/*` re-runs prepare
+and **re-applies the whole patch stack from pristine** - any manual `build_dir`
+edits are discarded and a malformed patch fails the build (no `.rej`, just
+"Patch failed! Please fix ..."). Always generate patch bodies with `diff -u`
+(a hand-written empty context line = "malformed patch"), and verify with
+`patch --dry-run` before building.
+
+### Boot log _11 + second vendor SSH session: ungate alone insufficient
+
+Log _11 proved the probe-time 0x79c ungate **executed** (`IPQ9574: ungated CMN
+PLL eth outputs (0x79c), ret=0` at 0.087s) yet `sys_clk_src` still failed at
+1.09s -> the 50 MHz is STILL not reaching the QCA8084. Conclusion: the ungate
+alone is not enough; QSDK's `qca_cmn_clk_config()` is a 3-step sequence
+(refclk select 0x784 -> **block reset pulse 0x780/BIT(6)** -> ungate 0x79c) and
+we only did step 3. Plausible failure mode: Linksys U-Boot leaves the CMN PLL
+analog block held in reset (0x780 bit6=0) or otherwise unconfigured; vendor
+reads `0x9b780 = 0xFF` (bit6=1, out of reset). Mainline never writes 0x780/0x784
+outside .set_rate, which never runs (clk core skips set_rate when U-Boot left
+CMN_PLL_CLK at the DT-assigned 12 GHz - discovered analyzing _10).
+
+**Current build**: full qca_cmn_clk_config sequence at probe (refclk index 7
+internal-48MHz to match vendor 0x9b784=0x8017, reset pulse, ungate) plus
+`dev_info` dumps of 0x780/0x784/0x79c/0x64 BEFORE and AFTER - the next boot log
+finally shows what U-Boot left in these registers.
+
+**Vendor QCA8084 internal regs read over paged MDIO** (ssdk_sh `debug phy set
+0x18 0x0c <page>` then `debug phy get 0x1X <r1>`; MHT split scheme from
+mdio-qca.c `split_addr`: r1=A&0x1c, r2=(A>>5)&7 -> lo phy 0x10|r2, page=(A>>8)
+&0xffff -> written via phy 0x18 reg (A>>24)&0x1f; reads are stable/repeatable
+and cross-validated by `ssdk_sh debug reg get 0x0c8001a0 4` returning identical
+data):
+- `sys_clk_src CMD 0x1A0 = 0x0682005f`, `CFG 0x1A4 = 0x0005001a` (odd - doesn't
+  decode as a cleanly-programmed RCG2; possibly reflects reset/default state,
+  NOT decoded confidently yet)
+- `SRDS0_SYS_CBCR 0x1A8 = 0x0` (off), **`SRDS1_SYS_CBCR 0x1AC = 0x220c0001`
+  (bit0 enabled)** on the working vendor
+- `EPHY0..3_SYS_CBCR` = 0x8020 / 0x40400000 / 0x32300000 / 0x1a0 (garbage-ish,
+  decode not trusted)
+- `WORK_MODE 0xC90F030 = 0x6862` -> bits[5:0] = **0x22**, which matches NONE of
+  QSDK's enums (UQXGMII=0x2F which mainline uses, SGMII_UQXGMII=0x27,
+  SWITCH_BYPASS_PORT5=0x20, SWITCH=0x10). Unresolved - either the paged reads
+  alias somewhere or the vendor genuinely runs an undocumented mode.
+- `GCC_GEPHY_MISC 0x304 = 0x40de1` (bits[4:0]=1, not the all-cleared state
+  qca_mht_clock_init would leave -> vendor DTB likely lacks `mdio_clk_fixup`,
+  i.e. vendor MHT bring-up is done by ssdk's qca_mht_hw_init at ~10s, not by
+  the mdio driver at probe).
+
+### *** ROOT CAUSE FOUND (log _13 + live OpenWrt shell): gpio60 held the QCA8084 in reset ***
+
+The WAN-port SSH shell worked (`ssh root@192.168.2.1`), and with `mdio-tools`
+baked in the whole multi-week mystery collapsed in minutes:
+
+1. **CMN PLL was never the problem.** Live OpenWrt `dev_info` dump: pre-init
+   `0x780=0xff 0x784=0x8017 0x79c=0xfc00 locked(0x64)=0x7` - i.e. **U-Boot
+   already configures the CMN PLL identically to the vendor** (locked, refclk
+   internal-48MHz, all eth outputs ungated). Patches 0364 (lock bit) and 0365
+   (0x79c ungate) plus the probe-time full-init were all fixing a non-problem.
+   0364 is still a genuine upstream bug (harmless here); 0365/full-init reverted.
+   `.set_rate` is skipped anyway (clk core no-op when U-Boot left CMN_PLL_CLK at
+   12 GHz), so none of it ever ran.
+
+2. **The QCA8084 was dead on MDIO the entire time.** `mdio 90000.mdio-1` scan
+   showed ONLY the WAN QCA8081 (0x1c) and 0x1d; the switch's own addresses
+   (0x01-0x06, 0x18) and the paged nss_cc window (phys 0x10-0x18) all returned
+   `0xffff`. The kernel's "sys_clk_src = 3.125 MHz" in clk_summary was an
+   **artifact of reading 0xffff** (div field 0x1f -> /16, 50/16 = 3.125). Every
+   "rcg didn't update" / "-16" was read/write into a chip that never responded.
+
+3. **gpio60 was the cause.** `/sys/kernel/debug/gpio`: OpenWrt `gpio60 : in low`
+   (floating, chip in reset) vs vendor `gpio60 : out high` (driven, out of
+   reset). gpio36 (WAN PHY) is `out high` on both - which is exactly why the WAN
+   PHY works and the switch does not. Our old `phy-reset-gpio` (which mainline
+   ignores) meant **nothing ever drove gpio60**, so the QCA8084 stayed in POR
+   reset forever.
+
+4. **Live proof.** `echo 572 > /sys/class/gpio/export` (base 512 + line 60),
+   `direction=out`, `value=1` -> instantly the MDIO scan showed all four internal
+   PHYs (`0x10-0x14` id 0x004dd0b1) + nss_cc, and the nss_cc registers read
+   **byte-identical to the vendor**: WORK_MODE `0x6862`, sys_clk_src CMD
+   `0x0682005f`, CFG `0x0005001a`. (Do NOT then unbind/rebind the nss_cc driver
+   to force reconfig - `qcom_cc_really_probe` re-registers already-registered
+   clocks and NULL-derefs -> kernel panic + reboot. Learned the hard way.)
+
+**THE FIX (DTS):** a `gpio-hog` on `&tlmm` drives gpio60 output-high at pinctrl
+probe, before any consumer. Removed the `phy-reset-gpio` from `&mdio`. A static
+hog (not reset-gpios) because mainline's MDIO core pulses reset-gpios low
+mid-registration and the chip does not recover (the original log _4 -110). Also
+removed the CMN PLL probe-time init block (build_dir) as unnecessary/risky.
+
+Everything downstream (patches 0362/0363 work-mode + SerDes bring-up, the DT
+`assigned-clocks` sys_clk_src=25MHz) should now run against a LIVE chip and was
+only ever failing because the chip was in reset. This is the first build that
+can actually work.
+
+### WAN shell plan (breaks the blind-iteration loop)
+
+Log _11 shows the **QCA8081 WAN PHY probes fine on mainline** (`PHY
+[90000.mdio-1:1c] driver [Qualcomm QCA8081]`, wan configures usxgmii; the
+pcs2 "10GBASE-R link not up" warning is just no-cable). Current build bakes in
+`files/etc/uci-defaults/99-mbe7000-debug-wan-access`: wan = static
+**192.168.2.1/24**, wan6 deleted, firewall wan-zone input=ACCEPT. If WAN links
+up, plug a laptop (static 192.168.2.2/24) into the WAN port -> `ssh
+root@192.168.2.1` (no password) -> live devmem/clk_summary/MDIO on OpenWrt.
+REMOVE this uci-default once LAN works.
+
 Blind iteration is the only channel (this unit has **no usable serial RX** -
 only the TX pad carries 1.8 V; the RX pad is dead/unpopulated, confirmed with
 a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:
 - Diff our DTS against @kravasuper's fork (the only claimed-working qca8084).
 - Try releasing gpio36 alongside gpio60 as qca8084 reset; test reset polarity.
 - Track PR #20604 upstream for the eventual qca8084 fix.
+
+## LIVE-DEBUG REFERENCE (WAN SSH + mdio-tools) - everything learned 2026-07-14
+
+This is the consolidated, reproducible reference for debugging this board over
+the network. It ended the blind-flash loop.
+
+### Access / environment
+- **OpenWrt over WAN:** `ssh -oHostKeyAlgorithms=+ssh-rsa
+  -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null root@192.168.2.1`
+  (no password). Enabled by `files/etc/uci-defaults/99-mbe7000-debug-wan-access`
+  (wan static 192.168.2.1/24, wan6 deleted, wan-zone input ACCEPT). Laptop on
+  the WAN port with static 192.168.2.2/24. REMOVE this uci-default before release.
+- **Vendor QSDK over LAN:** `ssh -oHostKeyAlgorithms=+ssh-rsa root@192.168.1.1`,
+  password `9fBt6y73p@`, Linux 5.4.213, model string `IPQ9574/AP-AL02-C4` (Linksys
+  shipped the QSDK reference DTS). Own device, authorised for debugging.
+- **Tooling baked into the OpenWrt debug image:** `mdio-tools` (+
+  `kmod-mdio-netlink`) via `CONFIG_PACKAGE_mdio-tools=y` /
+  `CONFIG_PACKAGE_kmod-mdio-netlink=y`. `CONFIG_KERNEL_DEVMEM=y` added but busybox
+  devmem applet did NOT stick through `make defconfig` - SoC MMIO is readable via
+  `/sys/kernel/debug/regmap/<dev>/registers` instead (cmn_pll = `9b000.clock-
+  controller`, SoC nss_cc = `39b00000.clock-controller`, gcc = `1800000.clock-
+  controller`; the MDIO QCA8084 nss_cc is NOT in regmap debugfs).
+- **No `scp`/sftp on the device** (`/usr/libexec/sftp-server: not found`) - push
+  files with `ssh root@192.168.2.1 'cat > /tmp/x' < localfile`.
+- The vendor QSDK has **no `mdio`/`devmem` raw tool exposed usefully** but has
+  `ssdk_sh`; MHT registers read via `ssdk_sh debug phy ...` (see below).
+
+### Raw MDIO / QCA8084 internal register access (the paged scheme)
+The QCA8084 ("MHT") 32-bit internal registers are reached over C22 MDIO by a
+split-address paging scheme (from QSDK `qca/src/linux-5.4/drivers/net/phy/
+mdio-qca.c`, `split_addr()` / `qca8386_read`). For a 32-bit address `A`:
+```
+r1   =  A        & 0x1c        # low reg (even), hi half at r1|2
+r2   = (A >> 5)  & 0x7         # low PHY addr = 0x10 | r2
+page = (A >> 8)  & 0xffff      # page value
+pr   = (A >> 24) & 0x1f        # page-write reg on PHY (0x18 | (A>>24)>>5) == 0x18
+# read:  mdio 0x18 pr page ; lo = mdio (0x10|r2) r1 ; hi = mdio (0x10|r2) r1|2 ; val=(hi<<16)|lo
+```
+`mdio-tools` raw C22 syntax on OpenWrt: `mdio 90000.mdio-1 <phyaddr> <reg> [val]`
+(read omits val). A ready-made helper is staged at `/tmp/mht.sh` on the device
+(`sh /tmp/mht.sh dump` / `rd 0xADDR` / `wr 0xADDR 0xVAL`). On the vendor use
+`ssdk_sh debug phy set 0x18 0x0c <page>` then `ssdk_sh debug phy get 0x1X <r1>`
+after `device id set 1` is NOT needed (page scheme is on dev0's bus directly).
+
+Key QCA8084 register addresses (QSDK names): `WORK_MODE 0xC90F030`
+(bits[5:0], QXGMII = 0x2F = BIT5|GENMASK(3,0); observed 0x6862 low byte 0x62 -
+top bits are non-mode status), `EPHY_CFG 0xC90F018`, `sys_clk_src CMD 0xC8001A0`
+/ `CFG 0xC8001A4`, `SRDS0/1_SYS_CBCR 0xC8001A8/AC`, `EPHY0..3_SYS_CBCR
+0xC8001B0..BC`, `GCC_GEPHY_MISC 0xC800304`. CMN PLL (SoC MMIO) at `0x9b000`:
+lock `0x64` bit2, power/reset `0x780` bit6, refclk `0x784`, output-enable `0x79c`
+(`GENMASK(15,10)`; vendor = 0xfc00).
+
+### THE root cause: gpio60 (see ROOT CAUSE section above for the full story)
+`/sys/kernel/debug/gpio`: gpio base is **512** on OpenWrt (vendor base 447);
+gpio60 global = 572. Live proof: `echo 572 > /sys/class/gpio/export ; echo out >
+.../gpio572/direction ; echo 1 > .../gpio572/value` -> QCA8084 instantly
+enumerates on MDIO (0x10-0x14 internal PHYs id `0x004dd0b1`, 0x15, nss_cc) and
+all its registers match the vendor byte-for-byte. Without it, every MHT MDIO
+addr (0x01-0x18) reads `0xffff`.
+
+### Post-hog boot state (log _14, gpio60 hog in DTS) - what still fails
+Chip alive from boot; `nss_cc_sys_clk_src` = **25 MHz enabled**, `srds1_sys` =
+25 MHz enabled. BUT:
+- `nss_cc_sys_clk_src: rcg didn't update` STILL logged at 0.495s. This is a
+  **transient poll-timeout, not fatal**: `clk_rcg2` writes CFG then polls the
+  UPDATE bit; the CFG write lands but the source needs time to stabilise, so the
+  synchronous poll (`clk-rcg2.c:136`, WARNING) times out while the value
+  eventually takes (hence 25 MHz when read later). Same pattern seen for
+  `mac2_rx_clk_src` and the "status stuck at on" mac branches during calibration.
+- SerDes calibration (`qca8084_do_calibration`, polls `CALIBRATION_DONE`)
+  SUCCEEDS (no "PCS calibration timeout!"); the 312.5 MHz roots
+  (`qca8k-uniphy1-tx312p5m`/`rx312p5m`, DT fixed-clocks) read 312.5 MHz.
+- Failure point: `qca8084_qxgmii_set_mode+0x26c` = `qca8084_xpcs_clock_parent_set`,
+  channel 1 (`nss_cc_mac2_rx_clk_src: rcg didn't update`). Channel 0's mac1_rx
+  reparented OK (CFG=312.5) but nothing is enabled (all mac clocks count 0), and
+  the qca8084 PHY probes then fail `-16`, leaving all 4 LAN PHYs unbound.
+- **Bug identified:** `PCS_RX_ROOT_CLK`/`PCS_TX_ROOT_CLK` (the reparent targets)
+  are never `clk_prepare_enable`'d - the driver only enables `PCS_CLK`. An RCG
+  can only complete its update onto a *running* source; the roots read 312.5 MHz
+  but are gated OFF (clk_summary count 0). Fix (build_dir, to fold into 0363):
+  enable both PCS root clocks + 10ms settle before the reparent loop in
+  `qca8084_xpcs_clock_parent_set()`. Building/flashing as _15.
+
+### Clock-tree facts (live clk_summary, chip out of reset)
+- `eth0-50mhz` (CMN PLL) enabled, 50 MHz, consumer `90000.mdio-1:18` (nss_cc-
+  qca8k) - this is the QCA8084 XO. `eth1/eth2-50mhz` disabled.
+- Post-boot mac clocks are mixed: mac1 all 312.5 MHz (ch0 done), mac2 25/12.5,
+  mac3 19.5/1.22M, mac4/5 50 MHz - i.e. only channel 0 got part-way configured.
+- The DT `assigned-clocks = <&qca8k_nsscc NSS_CC_SYS_CLK_SRC>` (25 MHz) runs at
+  nss_cc probe (~0.5s), which is EARLIER than the qca8084 work-mode/calibration;
+  the transient failure there cascades. QSDK order is work_mode -> calibration ->
+  switch_reset -> switch_init -> gcc_clock_init(sys_clk) - i.e. sys_clk config
+  comes AFTER calibration. If the PCS-root fix is not enough, the next move is to
+  stop programming sys_clk_src via premature DT assigned-clocks and do it inside
+  the qca8084 driver after work-mode, matching QSDK ordering.
+
+### GOTCHAS learned the hard way
+- **Do NOT unbind/rebind the nss_cc clock provider** (`echo ... >
+  /sys/bus/mdio_bus/drivers/qcom,qca8k-nsscc/unbind|bind`): re-probe hits
+  `qcom_cc_really_probe -> devm_clk_register_regmap -> __clk_register` on
+  already-registered clocks and NULL-derefs -> **kernel panic + reboot**. Rebinding
+  the qca8084 PHY devices instead just returns EBUSY (sysfs bind rejected), it
+  does not cleanly re-run the shared package init. To re-test bring-up, reflash.
+- All CMN PLL patches/init (0364 lock-bit, 0365 0x79c ungate, probe-time full
+  init) were fixing a NON-problem: U-Boot already leaves the CMN PLL configured
+  identically to the vendor (0x780=0xff, 0x784=0x8017, 0x79c=0xfc00, locked=0x7).
+  `.set_rate` is skipped by the clk core anyway (rate unchanged at 12 GHz). 0364
+  is a real upstream bug (harmless here, keep); 0365 + the probe-init were
+  reverted. The "rcg didn't update" was NEVER a CMN PLL problem.
+- `mdio 90000.mdio-1` (no args) bus scan is the fastest liveness check: if it
+  shows only 0x1c/0x1d, the QCA8084 is in reset; if it shows 0x10-0x15 too, the
+  chip is up. WAN QCA8081 is 0x1c (`0x004dd101`), links up at 1 Gbps.
+- **Live nss_cc register reads RACE with the kernel's periodic PHY polling.**
+  The paged access sets a shared page register (phy 0x18 reg 0x0c); a concurrent
+  kernel MDIO access between the page-write and the lo/hi reads returns
+  wrong-page data (saw mac2_rx come back as `0x0682005f` = sys_clk_src, mac_tx as
+  `0x6862` = WORK_MODE). Only trustworthy right after gpio bring-up before
+  drivers poll, or on the vendor via `ssdk_sh` (atomic). Read vendor for ground
+  truth instead.
+
+### Boot log _15: PCS-root-enable fix did NOT help; failure still mac2_rx (ch1)
+
+Enabling `PCS_RX/TX_ROOT_CLK` + 10ms settle before the reparent (in
+`qca8084_xpcs_clock_parent_set`) did not change the outcome: still
+`nss_cc_mac2_rx_clk_src: rcg didn't update` at channel 1, `qca8084_qxgmii_set_mode
++0x2dc`, all four PHYs `-16`. Channel 0 (mac1) reparents; channel 1 (mac2)
+consistently fails (deterministic, not random). So the reparent-target being
+gated was not the cause.
+
+### QSDK vs mainline: RCG handshake identical, ORDER + PARENT differ
+
+- **RCG update handshake is byte-identical** between QSDK `ssdk_mht_clk_update`
+  (poll CMD_UPDATE self-clear, 1000x udelay(1)) and mainline `update_config`
+  (`clk-rcg2.c:136`, 500x udelay(1)). So the failure is chip state/order, not
+  the poll. (Mainline's timeout is actually 2x shorter - a possible minor factor
+  but not the root.)
+- **QXGMII parents are CROSSED in QSDK** (`ssdk_mht_gcc_port_clk_parent_set`,
+  `MHT_PHY_UQXGMII_MODE`): `port_tx_parent = MHT_P_UNIPHY1_RX312P5M`,
+  `port_rx_parent = MHT_P_UNIPHY1_TX312P5M`. Mainline
+  `qca8084_xpcs_clock_parent_set` does straight `XPCS_RX_SRC->PCS_RX_ROOT` /
+  `XPCS_TX_SRC->PCS_TX_ROOT`. NEEDS VERIFYING whether PCS_RX_ROOT actually maps
+  to the crossed uniphy clock (would fail all channels if wrong, though - so this
+  alone does not explain ch0-ok/ch1-fail).
+- **QSDK enables the common clock infrastructure FIRST**
+  (`ssdk_mht_gcc_common_clk_parent_enable`: switch_core->UNIPHY1_TX312P5M +
+  enable, apb, ahb->UNIPHY1_TX312P5M, srds1_sys, gephy0-3_sys, sec_ctrl) and
+  only THEN does per-port `gcc_port_clk_parent_set` + `port_clk_en_set`. Mainline
+  reparents the port clocks inside `qca8084_qxgmii_set_mode` and enables the
+  common infra (`qca8084_package_clock_init`: switch_core, apb, ahb) AFTER. Prime
+  suspect for the remaining failure: the 312.5 MHz SerDes root the mac RCGs
+  reparent onto is not fully brought up because switch_core/UNIPHY1_TX312P5M is
+  not enabled yet.
+- QSDK overall order (`qca_mht_hw_init`): work_mode_init -> interface_mode_init
+  (SerDes calibration) -> switch_reset -> switch_init -> ssdk_mht_gcc_clock_init
+  (common infra, THEN per-port). Mainline probe_once order: work_mode -> EPHY LDO
+  -> qxgmii_set_mode (calibration + port reparent) -> package_clock_init (common
+  infra). To match QSDK, package_clock_init (or at least switch_core enable)
+  should run BEFORE the port reparent.
+
+RCG offsets (mainline nsscc-qca8k.c, add 0xC800000 for the QSDK phys addr; CFG =
+CMD+4, src_sel = CFG bits[10:8]): switch_core 0x0, mac1_tx 0x40, mac1_rx 0x60,
+mac2_tx 0x80, mac2_rx 0xa0, mac3_rx 0xe0, mac4_rx 0x120, sys_clk_src 0x1a0,
+SRDS0/1_SYS_CBCR 0x1a8/0x1ac. Vendor read staged in scratchpad
+`vendor_macclk.sh` to capture the working src_sel + enable state.
+
+### CORRECTION: userspace paged nss_cc reads are UNRELIABLE - discard them
+The QSDK split-address paging (page-write to phy 0x18 reg 0x0c, then read at
+phy `0x10|r2`) collides with the QCA8084's REAL internal PHY addresses 0x10-0x15
+(the four EPHYs id `0x004dd0b1` sit at 0x10-0x13, and 0x15 answers as
+`0x06820805`). The page redirect does not take through `mdio`/`ssdk_sh debug
+phy`, so the reads return those PHYs' STANDARD C22 registers, not the paged
+nss_cc data. Tells: values like `0x1040` (a BMCR), `0x004d` (PHY-ID hi), and the
+same `0x0682005f` coming back for multiple distinct addresses. This means the
+"vendor sys_clk_src = 0x0682005f / WORK_MODE = 0x6862 / SRDS1_SYS_CBCR =
+0x220c0001" reads from BOTH sessions are bogus and must not be trusted as target
+values. What IS trustworthy: the `mdio 90000.mdio-1` bus SCAN (liveness), SoC
+MMIO via `/sys/kernel/debug/regmap/*/registers` + devmem, `clk_summary` rates
+(the kernel's own qca8k regmap access is correct), and kernel dmesg. The
+gpio60 root cause stands (proved by bus enumeration, not paged reads). To read
+QCA8084 nss_cc registers reliably, add temporary `dev_info` dumps inside the
+driver (which uses the correct regmap) rather than poking from userspace.
+
+### _17: ROOT of the ch1 failure - reparent runs before XPCS is up (reorder fix)
+
+_16 retry ran all 10 times and every one failed -> the ch1 reparent is
+**structural, not transient**. Retry reverted.
+
+Live clk debugfs (kernel's correct access) pinned it down:
+- `nss_cc_mac1_rx_clk_src`: parent = `qca8k-uniphy1-tx312p5m` (312.5M, reparented)
+- `nss_cc_mac2_rx_clk_src`: parent = `eth0-50mhz` (25M, still default)
+- both have the SAME possible_parents `{eth0-50mhz, qca8k-uniphy1-tx312p5m}`.
+
+Same target, same mux - ch0 switched, ch1 could not. The target
+`qca8k-uniphy1-tx312p5m` is a single DT fixed-clock shared by all mac RCGs, so
+the difference is the PHYSICAL per-channel SerDes output: only channel 0's
+312.5 MHz is toggling at reparent time. Channels 1-3 only start producing their
+clock once the XPCS is reset/enabled in `qca8084_xpcs_set_mode()` (BaseR up ->
+USXGMII/QXGMII -> XPCS reset -> per-channel AN config) - which the driver ran
+AFTER the reparent.
+
+**Fix (_17):** reorder `qca8084_qxgmii_set_mode()` to
+`pcs_set_mode` (calibration) -> `xpcs_set_mode` (XPCS/all-channel bring-up) ->
+`xpcs_clock_parent_set` (reparent). Matches QSDK, which does XPCS/interface
+config in `qca_mht_interface_mode_init` BEFORE the port-clock reparent in
+`ssdk_mht_gcc_clock_init`. (Kept the PCS-root clk_prepare_enable from _15 - it is
+QSDK-aligned and harmless.) To fold into patch 0363 once confirmed.
+
+### _17 RESULT: reparent fixed, but exposed XPCS soft-reset failure (next layer)
+
+The reorder WORKED for the reparent: `nss_cc_mac2_rx_clk_src: rcg didn't update`
+is GONE (only the harmless `sys_clk_src` transient remains). New failure, one
+layer deeper:
+```
+[1.860] mdio_bus 90000.mdio-1:07: XPCS reset failed!
+[1.860] Qualcomm QCA8084 90000.mdio-1:01: probe ... failed with error -110
+```
+This is `qca8084_xpcs_set_mode()`'s XPCS soft reset (poll DIG_CTRL1
+XPCS_RESET/BaseR) timing out, NOT the old `phy_poll_reset failed: -110` (that was
+the chip held in reset). Confirmed live: chip fully alive, `mdio 90000.mdio-1`
+scans 0x10-0x14 (internal EPHYs) + 0x15 (XPCS `0x06820805`) + 0x1c (WAN). Note
+`xpcs_set_mode` had NEVER run before in any boot (the reparent always aborted
+first), so this XPCS reset failure was latent all along, only now reachable.
+The reorder + gpio60 fix are both correct; keep them. IMPORTANT ordering fact:
+in `_17`, `xpcs_set_mode` runs with the mac clocks still at DEFAULT (reparent is
+after it) - and QSDK ALSO does its XPCS soft reset before the port-clock
+reparent, so the XPCS soft reset must NOT depend on the mac clocks being at
+312.5. Its failure is a missing/most-likely uniphy-side step, not clock rate.
+
+### QSDK QXGMII bring-up sequence (authoritative) - the target to match
+
+`qca_mht_hw_init` order (ssdk_mht.c): work_mode_init -> **interface_mode_init**
+-> switch_reset -> switch_init -> **gcc_clock_init** (=common infra + per-port
+reparent). So ALL SerDes/XPCS bring-up (incl. XPCS soft reset) is in
+interface_mode_init, BEFORE any port-clock reparent. Matches our `_17` order.
+
+`mht_interface_uqxgmii_mode_set` (mht_interface_ctrl.c ~428-510), IN ORDER:
+1. datapass config = USXGMII (MMD1 GMII_DATAPASS_SEL)
+2. **`ssdk_mht_port_clk_reset(UNIPHY|EPHY)` for ports 1-4** (toggle CBCR reset
+   bit(2) of the per-port uniphy+ephy clock branches) - BEFORE calibration
+3. uniphy PLL ana soft reset (`MHT_UNIPHY_PLL_POWER_ON_AND_RESET` 0x40 bit) ->
+   mdelay(10) -> ana soft release
+4. **`mht_uniphy_calibration`** (poll calibration done)
+5. **enable SSCG** (MMD1 CDA_CONTROL1 bit 0x8 = SSCG_ENABLE)
+6. **release XPCS** (`ssdk_mht_clk_deassert(MHT_UNIPHY_XPCS_RST)`)
+7. **ethphy software reset for ports 1-4** (`qca808x_phy_reset` per internal EPHY)
+8. set BaseR mode (MMD3 PCS_CTRL2 = 10GBASE_R)
+9. wait 10G BaseR link up (`mht_uniphy_xpcs_10g_r_linkup`)
+10. enable UQXGMII (MMD3 DIG_CTRL1 0x200 = USXGMII_EN)
+11. set QXGMII (MMD3 VR_RPCS_TPC 0x1c00 = QXGMII_EN)
+12. set AM interval (MMD3 MII_AM_INTERVAL)
+13. **XPCS soft reset** (`mht_uniphy_xpcs_soft_reset`: MMD3 DIG_CTRL1 0x8000,
+    poll 100x mdelay(1))
+
+Mainline mapping (qca8084_serdes.c): `qca8084_pcs_set_mode` = PCS_CLK enable,
+pcs rstc deassert, IPG tune, xpcs rstc ASSERT, pcs_set_interface_mode, reset 4
+channels (reset_control_reset xpcs_ch.rstcs), `qca8084_do_calibration` (ana
+reset/release + poll CALIBRATION_DONE), SSC_FIX_MODE, xpcs rstc DEASSERT. Then
+`qca8084_xpcs_set_mode` = BaseR, wait BaseR up, USXGMII, QXGMII, AM interval,
+XPCS soft reset (DIG_CTRL1 0x8000) + wait.
+
+**Steps QSDK does that mainline appears to MISS before the XPCS soft reset (the
+suspects for the -110):**
+ (a) QSDK step 2: `port_clk_reset(UNIPHY|EPHY)` for all 4 ports (CBCR reset
+     pulse) BEFORE calibration. Mainline resets the XPCS *channels*
+     (reset_control_reset on xpcs_ch.rstcs) but maybe not the per-port UNIPHY/
+     EPHY clock branches. This is the top suspect: the XPCS soft reset needs its
+     uniphy clock domain properly reset/running for all channels.
+ (b) QSDK step 5: SSCG enable (MMD1 CDA_CONTROL1 0x8). Mainline does SSC_FIX_MODE
+     (CDR_CONTRL) instead - different register; may be insufficient.
+ (c) QSDK step 7: ethphy software reset of the 4 internal EPHYs BEFORE the XPCS
+     soft reset. Mainline resets the EPHYs later (in qca808x per-PHY probe).
+ (d) QSDK "release XPCS" (step 6) = deassert a dedicated MHT_UNIPHY_XPCS_RST
+     reset. Mainline deasserts xpcs rstc at the END of pcs_set_mode - verify the
+     DT `resets`/reset-controller for the xpcs actually maps to the same bit.
+
+### NEXT STEPS (when resumed)
+1. Live-inspect the XPCS via C45 while the chip is up: `mdio 90000.mdio-1 0x07
+   mmd ...` (XPCS is mdio addr 0x07 = 90000.mdio-1:07) - read MMD3 DIG_CTRL1
+   (is XPCS_RESET stuck set? is BaseR up?), and the uniphy PLL/calibration
+   status. Compare with QSDK expectations. (Reliable: C45 MMD reads are direct,
+   not the broken paged nss_cc hack.)
+2. Highest-probability fix: add the missing uniphy/ephy reset steps before the
+   XPCS soft reset (suspect (a): per-port UNIPHY/EPHY clock-branch reset pulse),
+   matching QSDK step 2. This likely lives in `qca8084_pcs_set_mode` (before/at
+   calibration) - the mainline reset_control handling may need the uniphy branch
+   resets that the qca8k-nsscc reset controller exposes.
+3. Alternative if that fails: the circular-dependency model - reparent ch0 first
+   (its SerDes clock is the only one up), then xpcs_set_mode, then reparent
+   ch1-3. Less likely (QSDK does xpcs reset before ANY reparent), but keep as
+   fallback.
+4. When qca8084 PHYs finally bind: have user move cable WAN->LAN for the real
+   end-to-end test (confirm port state live first so they don't lose access for
+   nothing).
+
+### Current tree state (build_dir, not yet folded to patches)
+- `ipq-cmn-pll.c`: clean patched state (0364 BIT(2) lock bit kept; 0365 0x79c
+  ungate kept but is redundant since U-Boot sets it - both harmless; probe-time
+  full-init REMOVED).
+- `qca8084_serdes.c`: (i) `qca8084_xpcs_clock_parent_set` enables PCS_RX/TX_ROOT
+  before the reparent loop (from _15, kept); (ii) `qca8084_qxgmii_set_mode`
+  reordered to pcs_set_mode -> **xpcs_set_mode -> xpcs_clock_parent_set** (_17).
+  The _16 retry was REVERTED. Fold both into patch 0363 once LAN works.
+- DTS: gpio60 `qca8084_reset_hog` in `&tlmm` (THE fix); phy-reset-gpio removed.
+- Image config: mdio-tools + kmod-mdio-netlink + KERNEL_DEVMEM added (debug).
+- `files/etc/uci-defaults/99-mbe7000-debug-wan-access` (WAN static 192.168.2.1,
+  input ACCEPT) - **REMOVED 2026-07-15** (LAN works, no longer needed). NOTE:
+  it already ran once on devices flashed before this, baking wan=static
+  192.168.2.1 + wan-zone input=ACCEPT into their /etc/config; a config-keeping
+  sysupgrade preserves that, so clean it on-device (revert wan to dhcp +
+  firewall wan input=REJECT) or flash the next image with `sysupgrade -n`.
+- Last flashed image `_17` sha256
+  a9eb04a01dc01b9b9df79a3f7a4ceb8f70f0a2d012e81fbfe556fe269231438d.
+
+### _16 attempt: bounded retry on the per-channel reparent
+Since mac2 (ch1) reparent fails deterministically while mac1 (ch0) succeeds, and
+the driver aborts on first failure (so mac2 never recovers, unlike sys_clk_src
+which consumers re-enable later), added `qca8084_reparent_retry()` (10x,
+5ms apart) around each `clk_set_parent` in `qca8084_xpcs_clock_parent_set`. If
+the 312.5 MHz root is merely marginal just after calibration, retry completes
+it; if all 10 fail, the failure is structural (not transient) and the next move
+is the QSDK ordering: run `qca8084_package_clock_init` (common infra:
+switch_core->UNIPHY1_TX312P5M enable, apb, ahb) BEFORE the port reparent, i.e.
+split `qca8084_qxgmii_set_mode` into calibrate / reparent halves. Building _16.
 
 ## Known gaps / things NOT verified against real hardware
 
@@ -914,32 +1467,509 @@ a loopback-tested 1.8 V adapter). Next investigative steps, when picked up:
   mainline 6.18) plus cross-referencing the real `ipq9574.dtsi` and
   `ipq9574-rdp433.dts` in this tree. It compiles; it hasn't run.
 
-## Build environment gotcha
+## Build environment gotcha + EXACT build recipe
 
 This host (Manjaro, very new glibc) can't build OpenWrt's pinned host
 tools from source (`tools/m4`, `tools/sed`, `tools/libressl` all fail with
 gnulib `off64_t`/`stdio.h` errors - old gnulib vs. too-new glibc, unrelated
-to this device). Building works fine in a plain `ubuntu:22.04` Docker
-container. Recipe used:
+to this device). Building works fine in an `ubuntu:22.04`-based Docker
+container.
+
+### The prebuilt image (use this - it already has deps + builder user)
+
+A committed image **`mbe7000-build-img:latest`** already contains: the full
+OpenWrt build-depends `apt-get install` list AND a `builder` user with
+uid=1000/gid=1000 (matching the host user, so output files land with
+correct ownership). Verified: `docker run --rm mbe7000-build-img:latest bash
+-c 'id builder'` -> `uid=1000(builder) gid=1000(builder)`. So no apt / user
+setup is needed anymore - just run make as the builder user.
+
+### The build script (`docker-build.sh`)
+
+Recreate this file (scratchpad is session-specific and gets cleaned up):
 
 ```bash
-docker run --name mbe7000-build \
-  -v /home/daniel/openwrt:/openwrt \
-  -v <path-to-docker-build.sh>:/docker-build.sh \
-  ubuntu:22.04 bash /docker-build.sh
+#!/bin/bash
+# Build the MBE7000 OpenWrt image inside the mbe7000-build-img container.
+# The image already has all OpenWrt build-depends + a builder user (uid 1000).
+set -o pipefail
+su builder -c "cd /openwrt && make -j16 IGNORE_ERRORS=1" 2>&1
+echo "=== MAKE EXIT: $? ==="
 ```
 
-where `docker-build.sh` does `apt-get install` of the standard OpenWrt
-build-depends list, creates a `builder` user matching the host UID/GID
-(1000:1000 here) so output files land with correct ownership, then runs
-`su builder -c "cd /openwrt && make -j16 IGNORE_ERRORS=1"`. The built
-toolchain persists in `staging_dir/toolchain-aarch64_cortex-a53_gcc-*`
-across runs, so only the first build pays the full toolchain-build cost.
+### GOTCHA: changing .config (e.g. adding packages) needs defconfig on the HOST
 
-This produced, successfully:
+The container builds work only because `.config` is normally already
+consistent so `make` never re-runs the kconfig `conf` tool. `conf` in this
+tree was compiled on the HOST (Manjaro, glibc 2.38) and **fails inside the
+ubuntu:22.04 container** with `scripts/config/conf: ... GLIBC_2.38 not found`.
+So when you change `.config` (adding LuCI, packages, kernel opts):
+
+1. Edit `.config` (append `CONFIG_PACKAGE_xxx=y`) then run
+   **`make defconfig` on the HOST** (works there; it only scans metadata +
+   runs conf, not the host-tools that fail on Manjaro). Ignore the
+   `libwayland does not exist` sdl3 WARNING - it is harmless, do NOT delete
+   the sdl3 feed symlink (that just cascades more warnings and needs a
+   `rm -rf tmp/` to recover).
+2. Then build in the container. The `docker-build.sh` removes the stale
+   host-built kconfig binaries first (`rm -f scripts/config/conf
+   scripts/config/mconf scripts/config/*.o`) so `make` rebuilds them against
+   the container glibc, then runs `make -j16 IGNORE_ERRORS=1` (NO defconfig
+   in the container).
+
+LuCI: enabled 2026-07-15 via `CONFIG_PACKAGE_luci=y` (metapackage ->
+luci-light + luci-app-package-manager -> uhttpd, luci-base, rpcd,
+luci-mod-{status,network,system}, firewall app, bootstrap theme). The base
+build had the luci *feed* on (`CONFIG_FEED_luci=y`) but ZERO luci/uhttpd
+packages selected, so there was no web server at all.
+
+### The run command
+
+```bash
+docker rm mbe7000-rebuild2 2>/dev/null
+docker run --name mbe7000-rebuild2 \
+  -v /home/daniel/openwrt:/openwrt \
+  -v /path/to/docker-build.sh:/docker-build.sh \
+  mbe7000-build-img:latest bash /docker-build.sh > /path/to/build.log 2>&1
+```
+
+Run it in the background (a DTS-only change rebuilds just the dtb + FIT +
+image, a few minutes; a kernel-source/patch change is longer). The built
+toolchain persists in `staging_dir/toolchain-aarch64_cortex-a53_gcc-*`
+across runs, so only the very first build ever pays the full toolchain cost.
+
+### Incremental (fast) iteration - see memory `mbe7000-build-iteration-workflow`
+
+For kernel driver tweaks, edit the file in
+`build_dir/target-aarch64_cortex-a53_musl/linux-qualcommbe_ipq95xx/linux-6.18.38/...`
+directly and rebuild (make reuses the prepared tree); fold the change into a
+proper `target/linux/qualcommbe/patches-6.18/NNNN-*.patch` and do one clean
+full build to verify at the end. DTS lives at
+`target/linux/qualcommbe/dts/ipq9574-mbe7000.dts` and is compiled into
+`build_dir/.../linux-qualcommbe_ipq95xx/image-ipq9574-mbe7000.dtb` by the
+image step - editing it there and running make is enough (no kernel rebuild).
+
+Pre-flight a DTS edit WITHOUT a full build using the kernel's own dtc:
+```bash
+K=build_dir/target-aarch64_cortex-a53_musl/linux-qualcommbe_ipq95xx/linux-6.18.38
+cp target/linux/qualcommbe/dts/ipq9574-mbe7000.dts $K/arch/arm64/boot/dts/qcom/precheck.dts
+( cd $K && cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
+    -I arch/arm64/boot/dts/qcom -I include -I scripts/dtc/include-prefixes \
+    arch/arm64/boot/dts/qcom/precheck.dts | scripts/dtc/dtc -I dts -O dtb -o /tmp/pc.dtb - )
+# warnings about i2c@/spi@ duplicate unit-address are pre-existing in ipq9574.dtsi, ignore.
+rm $K/arch/arm64/boot/dts/qcom/precheck.dts
+```
+
+A successful full build produces, in `bin/targets/qualcommbe/ipq95xx/`:
 - `bin/targets/qualcommbe/ipq95xx/openwrt-qualcommbe-ipq95xx-linksys_mbe7000-initramfs-uImage.itb`
 - `bin/targets/qualcommbe/ipq95xx/openwrt-qualcommbe-ipq95xx-linksys_mbe7000-squashfs-factory.bin`
 - `bin/targets/qualcommbe/ipq95xx/openwrt-qualcommbe-ipq95xx-linksys_mbe7000-squashfs-sysupgrade.bin`
+
+## Dual-boot boot counter reset (auto_recovery) — 2026-07-15 [VERIFIED WORKING]
+
+STATUS: verified on hardware. After flashing, U-Boot shows boot_count staying
+at 0 across the first boot and subsequent reboots (no A/B failover). The
+init.d/bootcount S99 reset works as intended.
+
+
+U-Boot on this board has `auto_recovery=yes`: it increments a **boot counter**
+each boot and, after `boot_part_ready` (=3) failed boots, fails the unit over
+to the other A/B partition. Userspace must clear the counter after a good boot
+or the unit ping-pongs partitions every 3 reboots.
+
+**Where the counter lives (verified live on both our OpenWrt and vendor fw):**
+- It is **NOT** a U-Boot text env var. `fw_printenv boot_count` -> "not
+  defined". So `fw_setenv boot_count 0` is a NO-OP here (this is the trap;
+  the Netgear wax620 pattern does not apply).
+- The text env (`u_env`, `/dev/mmcblk0p21`, `0x0 0x40000`) only holds
+  `boot_part`, `auto_recovery`, `boot_part_ready`, `bootcmd=bootipq`, etc.
+  Vendor `/etc/fw_env.config` = `/dev/mmcblk0p21 0x0 0x40000`. We now SHIP this
+  (2026-07-15): added a `linksys,mbe7000` case to the existing
+  `package/boot/uboot-tools/uboot-envtools/files/qualcommbe_ipq95xx`
+  (`ubootenv_add_mmc "u_env" "" "0x0" "0x40000"` -> generates that exact
+  /etc/fw_env.config on first boot). Before this, `fw_printenv` failed with
+  "Cannot parse config file '/etc/fw_env.config'". NOTE the effective file is
+  `qualcommbe_ipq95xx` (BOARD_SUBTARGET), which the Makefile prefers over a
+  plain `qualcommbe` file. [VERIFIED WORKING on hardware 2026-07-15 -
+  fw_printenv reads the u_env text vars.]
+- The **counter is a binary record in the `s_env` partition**
+  (`/dev/mmcblk0p22`, GPT label `s_env`, `find_mmc_part s_env` resolves it),
+  in the Linksys bootcounter format (little-endian):
+  `struct { u32 magic=0x20110811; u32 count; u32 checksum=magic+count; }`
+  (same `BOOTCOUNT_MAGIC` as OpenWrt `package/system/mtd/src/linksys_bootcount.c`).
+
+**How the vendor resets it (authoritative):** `/etc/init.d/CBT_system_ready`
+(START=99, after `sleep 20` + system-ready) runs the proprietary
+**`recovery_emmc -c`**. (An older approach in `/etc/init.d/done`, now commented
+out, just `dd if=/dev/zero of=$(find_mmc_part s_env)`.) The `recovery_emmc`
+binary strings show `/dev/mmcblk0p%d`, `BootCount:%d, NextRecord:%d`,
+`Updating BootCount MMC ...` — same record scheme. After `-c` runs, s_env is:
+`11 08 11 20  00 00 00 00  11 08 11 20` (magic, count=0, checksum=magic).
+
+**Our implementation (eMMC, so `mtd resetbc` cannot be used — it needs MTD):**
+`target/linux/qualcommbe/ipq95xx/base-files/etc/init.d/bootcount` (START=99,
+auto-enabled at build -> `/etc/rc.d/S99bootcount`). For `linksys,mbe7000` it
+locates `s_env` via `find_mmc_part` (fallback: scan `/sys/class/block/*/uevent`
+for `PARTNAME=s_env`), zeroes the first 4K, then writes the count=0 record
+`printf '\021\010\021\040\000\000\000\000\021\010\021\040'` — byte-identical
+to what `recovery_emmc -c` leaves. Reset point = END of boot (START=99),
+matching both the vendor (CBT_system_ready S99) and OpenWrt convention
+(qualcommax/ipq807x `bootcount`). No extra packages needed (dd/printf/logger/
+find_mmc_part/board_name are all in base).
+
+**Vendor SSH (QSDK 19.07, RSA only):**
+`ssh -oHostKeyAlgorithms=+ssh-rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.1.1`,
+password `9fBt6y73p@`. No sshpass on host -> use `SSH_ASKPASS`+`setsid -w`.
+
+## Wi-Fi (ath12k / QCN9274) bring-up — IN PROGRESS 2026-07-15
+
+Radios: 2x PCIe QCN9274 (pci17cb,1109; marketing "QCN6274"; QSDK calls it
+"qcn9224"; ath12k drives as **qcn9274 hw2.0**) + a SoC internal 2.4G radio.
+Only the **pcie2** endpoint (0002:01:00.0) enumerates so far; pcie1's endpoint
+does not appear (separate issue, TODO). Driver/firmware/wpad all present;
+blocker is the **board data file (BDF)**.
+
+**The Xiaomi BE7000 PR (#20604, same IPQ95xx family) does NOT solve wifi - it
+ships both radios `status="disabled"`.** No ipq-wifi/board-2.bin package there;
+its nvmem-layout is only for the Aquantia PHY fw (`aqr_fw`). So this is an
+unsolved frontier and we are pioneering it.
+
+Vendor uses QSDK **bdwlan.bNN** BDFs (not mainline board-2.bin):
+`qcn9224/bdwlan.b1006` (board_id 0x1006) = PCIe radios; `IPQ9574/bdwlan.b20` =
+internal radio. Extracted from the vendor slot (mmcblk0p29, mounted RO) - saved
+in scratchpad `bdf/`.
+
+Progress (all via live SSH + cold-reboot tests; ath12k CANNOT warm-reload -
+rmmod/modprobe -> "duplicate filename mhi0_IPCR" + QMI -11, needs cold boot):
+1. Card reports **qmi-board-id=255 (0xff)** (OTP unprovisioned). Stock
+   board-2.bin has no 0xff entry -> "failed to fetch board data ... -12".
+2. Built board-2.bin wrapping vendor `bdwlan.b1006` as name
+   `bus=pci,qmi-chip-id=0,qmi-board-id=255` using ath11k-bdencoder
+   (github qca/qca-swiss-army-knife). -> lookup succeeded but "found invalid
+   board magic".
+3. **Magic fix:** ath12k wants `QCA-ATH12K-BOARD` (hw.h ATH12K_BOARD_MAGIC),
+   bdencoder writes `QCA-ATH11K-BOARD`. Patched encoder -> `ath12k-bdencoder`
+   in scratchpad (sed 11K->12K). Same length, clean.
+4. **regdb is fatal** (qmi.c ath12k_qmi_event_load_bdf: regdb load err -> return).
+   Added vendor `qcn9224/AH/regdb.bin` into the SAME board-2.bin as a regdb IE
+   named by the board name. Current staged board-2.bin md5
+   61b541678b1c4fe0ef3c8b6f74b4d4ba (magic OK + board + regdb).
+Staged at /lib/firmware/ath12k/QCN9274/hw2.0/board-2.bin on the running unit
+(overlay persists; original saved as board-2.bin.orig). NEXT: cold-reboot test.
+
+**_23 boot (board-2.bin md5 61b54167):** board magic + regdb errors GONE.
+ath12k now boots firmware and reaches WMI. New chain:
+`qmi failed to load CAL data file:cal-pci-0002:01:00.0.bin` (NON-fatal, it
+continued) -> `qmi dma allocation failed (29360128 B=28MB type 1)` ->
+`memory type 10 not supported` -> WMI CONTROL connect -71 -> `failed to receive
+wmi unified ready event:-110` -> `failed to start core:-110`.
+
+**Root cause: no CMA.** `CONFIG_CMA` was unset (dmesg: `0K cma-reserved`).
+The QCN9274 fw needs a ~28MB contiguous DMA chunk (dma_alloc_coherent,
+qmi.c:2560); without CMA it fails, defers, and the deferred path can't handle
+the segment ("memory type 10 not supported", qmi.c:2649) -> fw never inits ->
+WMI -110. With CMA the 28MB allocates on the first pass and the deferred/type-10
+path never runs, so CMA should fix the whole chain.
+FIX (2026-07-15): added to config-6.18: CONFIG_CMA=y, CONFIG_CMA_SIZE_MBYTES=128,
+CONFIG_CMA_SIZE_SEL_MBYTES=y, CONFIG_CMA_ALIGNMENT=8, CONFIG_CMA_AREAS=7,
+CONFIG_DMA_CMA=y. Board has 1GB RAM; CMA is reusable so 128MB is safe. Full
+kernel rebuild required (core mm option) - can't test live.
+BUILD GOTCHA: turning on CONFIG_CMA exposes a kconfig CHOICE (CMA_SIZE_SEL_*)
+and auto-selected symbols; the kernel's syncconfig under OpenWrt errors on an
+incompletely-specified choice (`choice[1-4?]` / `(NEW)`) instead of defaulting,
+and `yes '' | make` does NOT reach syncconfig under -j parallel. Fix: specify
+the COMPLETE set in config-6.18 (get it from `make -C <kerneldir> olddefconfig`
+then grep): CONFIG_CMA=y, CMA_ALIGNMENT=8, CMA_AREAS=8, CMA_SIZE_MBYTES=128,
+CMA_SIZE_SEL_MBYTES=y + the other three SEL_* as "is not set", CMA_DEBUGFS/
+CMA_SYSFS "is not set", CONFIG_DMA_CMA=y, DMA_NUMA_CMA "is not set",
+CONFIG_CONTIG_ALLOC=y, CONFIG_MEMORY_ISOLATION=y. Built OK: image sha256
+b7bfb30b3a673634467f69377ba81e7120e08de046bd3cd8e698d9fb82732037 (2026-07-15).
+
+**Radio layout (tri-band BE11000, 3 radios):** 2.4G = IPQ9574 SoC-integrated
+radio (wifi@c0000000, uses IPQ9574/bdwlan.b20) via ath12k AHB/platform + Q6
+remoteproc + reserved-memory (NOT PCIe/CMA) - not wired up yet, later task.
+5G + 6G = the two PCIe QCN9274 cards (CMA path, being solved now). Only one
+PCIe endpoint (pcie2/0002:01:00.0) enumerates so far; pcie1 endpoint missing.
+
+VENDOR DRIVER (vendor_boot.log): the vanilla fw uses NEITHER ath11k nor ath12k
+- it's Qualcomm's proprietary **cnss2 + QSDK wlan driver** ("Loading cnss2",
+"QCN9224_PCI2", MLO_MGR). It fully brings wifi up (start_ap ath00, Wi-Fi 7 MLO).
+Same QCN9274 firmware branch as us (WLAN.WBE.1.6) - so ath12k drives identical
+silicon/fw; mainline ath12k is the correct clean target (no vendor shortcut).
+MEMORY MODEL: vendor uses reserved-memory **shared-dma-pool** regions
+(dma_pool1@1/dma_pool2@2, 9 MiB each), NOT CMA (`0K cma-reserved`). Our CMA=128MB
+is the standard mainline-ath12k-PCIe path (dma_alloc_coherent from default CMA);
+if CMA fails, fallback = per-radio shared-dma-pool assigned via `memory-region`
+on each pcie wifi node. Note ath12k asks 28MB vs vendor's 9MB pools.
+CALDATA: vendor loads /lib/firmware/IPQ9574/caldata.bin (per-device, from 0:ART
+= mmcblk0p20); cnss logs "No board_id in device tree" (=> board_id 0xff, matches
+us). For ath12k this is cal-pci-0002:01:00.0.bin (currently non-fatal warning) -
+extract from 0:ART after CMA gets a phy registered.
+
+TEST NOTE: board-2.bin currently lives only in the running unit's OVERLAY
+(/lib/firmware/... via cat), so flash the CMA image with a CONFIG-KEEPING
+sysupgrade (not -n) or re-push board-2.bin over SSH after flashing. Once wifi
+works, package board-2.bin as `ipq-wifi-linksys_mbe7000`. Anticipated remaining
+hurdles: per-device caldata (cal-pci-*.bin from 0:ART, currently non-fatal);
+pcie1 endpoint; the internal 2.4G radio. Tooling: scratchpad ath12k-bdencoder,
+bdf/ (qcn9224-bdwlan.b1006, regdb.bin, board-2.bin).
+
+## ▶ RESUME HERE (start of 2026-07-17 session)
+
+CLEAN-FLASH TEST **PASSED** (2026-07-17): user flashed the permanent build to slot 2
+from vendor and booted OpenWrt - **5 GHz Wi-Fi comes up on its own, no SSH push**.
+Confirms board-2.bin is correctly baked into /rom and the ipq-wifi shared-package
+chain works end to end. Device is now on **OpenWrt (slot 2)**.
+DONE (prior session): 5 GHz wifi working + made permanent (ipq-wifi shared pkg, =y);
+fw_env.config; bootcount reset; QCA8075 LAN; removed WAN debug.
+6 GHz: SOLVED 2026-07-17 - DT-gated dual-MAC force (DTS `qcom,ath12k-force-dualmac`
++ mac80211 patch 705). Verified on HW: 5 GHz + 6 GHz (up to 320 MHz EHT/Wi-Fi 7)
+both AP-ENABLED. See the "6 GHz - SOLVED" sub-section. Perm build sysupgrade
+sha256 b849ece8c79f52fe8dfbbc0098a214be21cb770cae6e9914a0f2bbadf7f1f448 (09:27).
+6 GHz PERM BUILD FLASHED + VERIFIED ON CLEAN FLASH 2026-07-17: DT-gated dualmac works
+with NO diagnostic/hack - dmesg has no "forcing dualmac", DT prop present live, mac0+mac1
+up, no MAC1 -71, phy0 Band2(5G)+Band4(6G), LAN 1G / WAN 2.5G. Build r35286+14-0cce5275b6.
+MLO: WORKS 2026-07-17 (single-chip 5+6 GHz, ap-mld0 AP-ENABLED, stable, no crash) -
+UCI-only config (list device radio0+radio1 + option mlo 1). See "MLO - WORKS" section.
+NOTE: not baking MLO/6G into default config - left to user choice.
+"Too many open files" on 6 GHz bring-up: INVESTIGATED 2026-07-17 = harmless misleading
+errno (netdev name-collision, not fd exhaustion); 6 GHz works through it. Real 6G-down
+cause was invalid default 6g channel '2' -> use a valid PSC channel. See the
+"TOO MANY OPEN FILES" note. NOT a bug to fix locally.
+### 2.4 GHz VENDOR GROUND TRUTH (live vendor firmware, 2026-07-17) [CORRECTED]
+CORRECTION: the 2.4 GHz radio is NOT Wi-Fi 7/ath12k (earlier mislabel). It is a
+Wi-Fi 6 PINE-class radio => ath11k territory. Evidence from vendor (QSDK OpenWrt 5.4.213):
+- phy0 = /sys/devices/platform/soc/c000000.wifi, AHB/platform (NOT PCIe), on-die,
+  boots on the SoC internal Q6: remoteproc0 cd00000.remoteproc (qcom-q6v5-wcss-pil),
+  fw IPQ9574/q6_fw.mdt.
+- WI-FI GENERATION = 6 (11ax), 2.4 GHz ONLY: phy0 Band1 = 2412-2462 (ch1-11), modes
+  11b/g/n/ac/ax (NO 11be); HE caps present but EHT PHY caps ALL-ZERO. wlan log: "Num
+  Radios = 1", 11ax=1, lo_2ghz=2312 hi_2ghz=2732 lo_5ghz=0.
+- FIRMWARE BRANCH = WLAN.HK.2.9.r4 (Hawkeye) w/ QCAHKSWPL tag; VerInfo lists WLAN_PINE/
+  PINE2/PINE3 => "Pine" = QCN50xx-family Wi-Fi 6 radio (exact QCNxxxx part not derivable
+  from fw; class=Pine/Hawkeye). chip_family 0x4 (vs QCN9224 PCIe = WLAN.WBE, family 0xb).
+- SoC reports "CPU: IPQ9554" (DT model says IPQ9574; same binned die - irrelevant).
+- Vendor driver = downstream QSDK cnss2 + qca_ol/umac (handles ALL radios; not ath11k/
+  ath12k). Firmware ALL extractable from vendor /lib/firmware/IPQ9574/: q6_fw.mdt+b00..b18,
+  m3_fw.mdt+b00..b02, bdwlan.b10/.b20/.bin (BDF), caldata.bin, regdb.bin + regional dirs.
+- Reserved-mem: m3_dump@4d600000, q6_caldb_region@4d800000, q6_etr_dump, mlo_global_mem_0.
+- Mainline ipq9574.dtsi has NEITHER wifi node NOR cd00000 WCSS-Q6 remoteproc (only rpm
+  remoteproc + wcss-phyb thermal). ath11k AHB of_match = ipq8074/ipq6018/ipq5018 (NO ipq95xx).
+=> CORRECTED PORT SCOPE (ath11k, NOT ath12k; more tractable): (1) add IPQ95xx internal
+Pine radio to ath11k + AHB of_match, TEMPLATED OFF IPQ8074 (same Hawkeye/Q6 pattern) -
+the main work but a known shape, not reverse-engineering; (2) DTS wifi@c000000 + cd00000
+q6v5-wcss remoteproc + reserved-mem + clocks; (3) package extracted IPQ9574/ firmware;
+(4) kconfig: enable kmod-ath11k-ahb (coexists with ath12k) + ATH11K_AHB. VERDICT: a real
+but more tractable ath11k port; still no upstream ipq95xx ath11k. Feasibility = medium
+(was wrongly "big ath12k reverse-engineering").
+
+2.4 GHz FEASIBILITY - SCOPED 2026-07-17: ath11k (Wi-Fi6 Pine) port, medium effort.
+The MBE7000's 2.4 GHz is the IPQ9574 ON-DIE radio (wifi@c000000, qcom,cnss-qca9574, via
+Q6). Mainline has ZERO support for it: ath12k AHB of_match = ONLY qcom,ipq5332-wifi
+(+IPQ5424); ath11k AHB = ipq8074/6018/5018; NO ipq9574 hw_rev in ath12k hw.c; mainline
+ipq9574.dtsi has NO wifi node (only wcss-phyb thermal). WHY: the RDP433 reference design
+(what mainline IPQ9574 ath12k was built against) uses 3x EXTERNAL QCN9274 on PCIe for all
+bands - nobody upstream needed the on-die radio. No in-flight patch series found. Our lone
+QCN9274 is committed to 5+6 GHz and its RF frontend can't do 2.4 (separate integrated RF
+path), so no shortcut. Enabling = add a NEW ath12k IPQ9574 integrated-radio hw_rev (HAL,
+reg maps, CE cfg, ring masks, hw_params) + ath12k_ahb kmod + Q6 remoteproc (userpd) + DTS
+wifi node + reserved-mem + m3/BDF fw - realistically ported from vendor QSDK ath12k. Multi-
+week, uncertain. RECOMMENDATION: defer; ship as a 5+6 GHz Wi-Fi 7 router. Revisit if
+upstream adds IPQ9574 on-die support or if a QSDK backport path proves clean.
+NEXT: (1) the ENFILE "too many open files" blip on 6 GHz iface bring-up; (2) decide
+default shipping wireless config (single APs vs MLO); (3) 2.4G integrated radio
+(separate, larger AHB/Q6 effort - ath12k_ahb isn't even built in our mac80211 pkg,
+PCI-only).
+CLEANUP PENDING: strip dormant qca8084 driver patches (0301-0312, 0362, 0363);
+remove wifi1@pcie1 from DTS (harmless failed probe). Fold any remaining build_dir
+edits into patches + full clean-build verify.
+
+## Wi-Fi RESULT + radio architecture — 2026-07-16 [5GHz WORKING]
+
+**5 GHz radio WORKS on hardware** (phone associated, WPA2 EHT80 AP, good perf).
+The combo that cracked it: CMA(128MB) + our board-2.bin(61b54167, board-id 255
++ regdb, ATH12K magic). Residual dmesg (`memory type 10`, `WMI MAC1 -71`,
+`cal-pci-*.bin -12`) are all NON-fatal - phy0 registers (5 GHz, EHT80/Wi-Fi 7).
+
+**Made permanent (in the SHARED ipq-wifi package - the standard way):**
+- `package/firmware/ipq-wifi/files/board-linksys_mbe7000.QCN9274` = our board-2.bin.
+- Added `linksys_mbe7000` to ALLWIFIBOARDS + `generate-ipq-wifi-package` call.
+- Added a `Build/Prepare` hook to ipq-wifi/Makefile that copies local
+  `./files/board-*` into PKG_BUILD_DIR (the upstream git-src prepare doesn't),
+  so the install-overlay wildcard finds it.
+- image/ipq95xx.mk DEVICE_PACKAGES: `ipq-wifi-linksys_mbe7000`.
+- .config: removed the STALE `ipq-wifi-8devices_kiwi=y` (kiwi device isn't even
+  selected - it was baking kiwi's board data into the shared base rootfs), and
+  set **`CONFIG_PACKAGE_ipq-wifi-linksys_mbe7000=y`**.
+
+KEY GOTCHA that cost several rebuilds: `install-overlay` DOES flatten into the
+rootfs, but only for **`=y`** packages. As `=m` it is built but never applied.
+Confirmed: with our pkg `=y`, the image squashfs board-2.bin = OUR 61b54167 (was
+the generic da60c3cd / kiwi's e8a1bc39). Regenerate the board file with scratchpad
+ath12k-bdencoder if the BDF changes. (Upstreaming: also send the board file to
+github.com/openwrt/firmware_qca-wireless.)
+
+**Radio architecture (from vendor_boot.log - definitive):** this unit brings up
+only TWO radios: (1) `cd00000.remoteproc` = IPQ9574 **integrated 2.4 GHz** (Q6/
+WCSS, chip_family 0x4, "2G=13 5G=0 6G=0") - separate AHB/remoteproc task, not
+done; (2) **one QCN9274 on pcie2** (0x20000000, chip_family 0xb, "QCN9224_PCI2")
+= our working 5 GHz. phy0 is 5 GHz-only (no 6 GHz frequencies).
+
+**6 GHz = 2nd MAC of the SAME QCN9274, needs DUAL-MAC firmware (NOT a pcie fix).**
+Live vendor check (2026-07-16) settled it: the vendor brings up 4 phys - phy0
+(2.4G, integrated c000000.wifi), phy2 (5G) and phy3 (6G, 320MHz Wi-Fi 7) which
+**both readlink to the SAME PCI device 0003:01:00.0 on pcie2**, plus mld-phy0
+(MLO 5G+6G). So the ONE QCN9274 runs 5G AND 6G concurrently as two MACs. pcie1
+STILL fails to link in the vendor (`Phy link never came up`) yet 6G works - so
+pcie1 is genuinely unused; do NOT chase it (our DTS wifi1@pcie1 probe just fails
+harmlessly - can remove later).
+The vendor achieves dual-radio by booting a special firmware:
+`remoteproc: Booting fw image qcn9224/amss_dualmac.bin (7557120 bytes)` - it ships
+both `amss.bin` (single-MAC) and `amss_dualmac.bin`. Our ath12k loads the
+single-MAC firmware-2.bin, so only 1 radio (5G) comes up and the 2nd fails
+(`WMI MAC1 connect request failed -71`). Vendor qcn9224 fw dir also has:
+caldata_{1..4}.bin (184320 B each, per-chain), m3.bin, fw_ini_cfg.bin,
+rxgainlutSKY_6G.bin, regdb.bin, bdwlan.b1006.
+**6 GHz path — RE-SCOPED 2026-07-17: it's a FIRMWARE problem, NOT a driver port.**
+Verified against our actual driver source (mac80211 backports-6.18.26, the ath12k
+we ship). The full single-chip QCN9274 dual-MAC + MLO stack is ALREADY PRESENT:
+  - `mhi.c ath12k_mhi_register()`: reads the chip's OTP board_id from HW register
+    `QCN9274_QFPROM_RAW_RFA_PDET_ROW13_LSB`; if bit `OTP_VALID_DUALMAC_BOARD_ID_MASK`
+    (0x1000) is set it selects the dual-MAC image FROM `ab->fw.amss_dualmac_data`,
+    i.e. an `ATH12K_FW_IE_AMSS_DUALMAC_IMAGE` (IE id 4) packed inside firmware-N.bin.
+    If that IE is absent it hard-fails: `-ENOENT "dualmac firmware IE not present"`.
+    -> dual-MAC-ness is in the CHIP OTP (HW; vendor runs it dual-mac so bit is set);
+       the SW gate is whether firmware-2.bin carries the AMSS_DUALMAC IE.
+  - `core.c ath12k_core_hw_group_set_mlo_capable()`: for our single device
+    (num_devices==1, QCN9274 fw_features_valid) sets
+    `mlo_capable = ath12k_fw_feature_supported(ab, ATH12K_FW_FEATURE_MLO)` — i.e.
+    MLO is enabled IFF firmware-2.bin's `ATH12K_FW_IE_FEATURES` advertises
+    FW_FEATURE_MLO. Driver defers to the fw flag on purpose.
+  - Both upstream MLO series are IN our tree: `ath12k_mac_op_can_activate_links`
+    (Dec-2024 "part 9/9", introduces FW_FEATURE_MLO) and `ath12k_get_num_partner_link`
+    (Feb-2025 single split-phy PCI MLO setup/ready/teardown, drops the num_devices==1
+    guard). Refs: lists.infradead.org/pipermail/ath12k/2024-December/004675.html,
+    .../2025-February/005742.html.
+The 2024 "dualmac fw crashes on same-chip MLO" caveat = the FIRMWARE of that era;
+vendor QSDK ships newer fw that sets FW_FEATURE_MLO (why vendor MLO works).
+
+### LIVE PROBE 2026-07-17 — ROOT CAUSE FOUND: OTP dualmac gate, not firmware
+Probed the running board (OpenWrt slot 2, 5 GHz up). Findings:
+  - Installed stock linux-firmware `QCN9274/hw2.0/firmware-2.bin` (build WLAN.WBE.1.6-
+    01243, 2025-12-09) ALREADY CONTAINS everything. Parsed its IE table:
+    TIMESTAMP, M3_IMAGE(421880), AMSS_IMAGE(7761920), **AMSS_DUALMAC_IMAGE(7852032)**,
+    **FEATURES len=1 with bits {0:MULTI_QRTR_ID, 1:MLO} BOTH SET**. So fw is NOT the
+    blocker; neither is the driver (full dual-MAC+MLO stack confirmed in backports-6.18.26).
+  - Yet only ONE MAC boots: `ls /sys/class/ieee80211` = phy0 only; debugfs has mac0
+    only; `iw phy0 info` shows Band 2 (5 GHz) only, NO 6 GHz. dmesg (every cold boot):
+    `HTC Service WMI MAC1 connect request failed -71` / `failed to connect to WMI
+    CONTROL service -71` / `Invalid module id 2`. qcn9274 hw2.0 hw_params has
+    max_radios=2, single_pdev_only=false, so the driver TRIES MAC1 but the firmware
+    only exposed 1 MAC => the SINGLE-mac amss.bin was downloaded, not amss_dualmac.
+  - WHY single-mac: `mhi.c ath12k_mhi_register()` only picks amss_dualmac if the chip's
+    OTP board_id (HW reg QCN9274_QFPROM_RAW_RFA_PDET_ROW13_LSB = 0x1E20338, mask
+    0xFFFF) has bit OTP_VALID_DUALMAC_BOARD_ID_MASK (0x1000). This board's OTP evidently
+    does NOT set that bit -> driver loads single-mac. The vendor QSDK cnss driver selects
+    amss_dualmac by its own board/DT config, NOT this OTP bit, so vendor runs dual-mac on
+    the SAME silicon while mainline defaults to single. (mhi_register runs only at PCI
+    probe, pci.c:1677 - NOT on recovery - so simulate_fw_crash won't re-select; a reboot
+    or PCI remove+rescan is needed to re-read OTP. NOT YET confirmed the OTP value with
+    debug - debug IS compiled in (debug_mask param + simulate_fw_crash exist); BOOT|QMI
+    = 0x60, but need it set at PROBE time. Two forced crashes rebooted the device; it
+    auto-recovered fine, 5G back, still slot 2.)
+
+### 6 GHz — SOLVED 2026-07-17 (DT-gated dual-MAC force) [VERIFIED ON HW]
+A TEST build (unconditional `dualmac = true` + an always-on ath12k_info of the OTP
+board_id) proved it live: dmesg printed `OTP board_id=0x0 dualmac_bit=0` (so mainline
+would NEVER pick dual-MAC on its own - the OTP gate is genuinely the blocker), the
+`WMI MAC1 -71` error vanished, debugfs gained `mac1`, and `iw phy0` gained a 6 GHz
+Band 4 (60 chans, 320 MHz / EHT). Brought up test APs: phy0.0-ap0 (5 GHz ch36) AND
+phy0.1-ap0 (6 GHz ch5, then ch37 @ **320 MHz EHT** = full Wi-Fi 7) both AP-ENABLED.
+6 GHz needs a reg country (hostapd errors on country '00'); set `country` on the radio.
+Note: mainline presents ONE wiphy (phy0) spanning 5+6 GHz backed by 2 MACs
+(mac0/mac1); OpenWrt auto-generates radio0(5g)+radio1(6g), both on the same phy path.
+
+PERMANENT FIX (shipped): DTS property `qcom,ath12k-force-dualmac;` on the wifi node
+(`wifi2: pcie@0` under &pcie2) + mac80211 patch
+`patches/ath12k/705-ath12k-force-dualmac-from-dt.patch`: in `ath12k_mhi_register`,
+`if (of_property_read_bool(ab->dev->of_node, "qcom,ath12k-force-dualmac")) dualmac = true;`
+(after the OTP block; NULL-safe so other QCN9274 cards unaffected; needs
+`#include <linux/of.h>`). No firmware/board-2.bin change (stock firmware-2.bin already
+has the AMSS_DUALMAC IE + FW_FEATURE_MLO). Verified: DTB carries the prop, rebuilt
+mhi.c has the DT gate, diagnostic removed.
+
+"TOO MANY OPEN FILES" - INVESTIGATED 2026-07-17, it is HARMLESS (not fd exhaustion):
+`hostapd: Failed to create interface phy0.1-ap0: -23 (Too many open files in system)`
+is a MISLEADING errno. Traced to kernel net/core/dev.c dev_prep_valid_name(): when a
+netdev name is already in use it returns `-dup_errno` and dev_alloc_name() passes ENFILE
+(=-23) as that code. So -23 here means "netdev name phy0.1-ap0 already in use", NOT open
+files. It's a create-before-teardown name collision during hostapd's multi-radio
+"Restart interface" retry on the 6 GHz radio. NON-FATAL: measured peak file-nr 304/87074
+(hostapd had 4 fds), and 6 GHz reaches AP-ENABLED anyway (3/3 bring-ups with a valid
+channel). Root fix would be in hostapd/netifd multi-radio-wiphy iface restart ordering
+(upstream, fast-moving) - not worth patching locally; it's cosmetic log noise.
+SEPARATE real gotcha: the AUTO-GENERATED default 6g radio uses `channel '2'`, which is
+NOT a valid 6 GHz channel -> hostapd drives phy0.1-ap0 to AP-DISABLED. Fix = set a valid
+6 GHz channel (PSC e.g. 37/53/...); then 6 GHz is reliably AP-ENABLED. (Also OpenWrt
+default-config roughness, not our port.)
+
+### MLO — WORKS 2026-07-17 (single-chip QCN9274, stock fw) [VERIFIED ON HW]
+Single-chip 5+6 GHz MLO comes up and is STABLE - the 2024 "same-chip dualmac MLO
+crashes" caveat does NOT apply to this firmware (WLAN.WBE.1.6-01243). No ath12k
+assert/crash. `ap-mld0: AP-ENABLED`, one MLD with 2 links: link0 5 GHz ch36 (80 MHz),
+link1 6 GHz ch37 (320 MHz EHT). MLO is NOT a LuCI option (no UI in any release yet) -
+it is UCI-only. hostapd is v2.12-devel with MLD/MLO built in; netifd has the plumbing
+(`parse_bool(config.mlo)`, `mld_start`/`mld_set`, `ap-mld<N>` ifaces).
+LEGACY COMPAT CONFIRMED: with ONE SSID/key across both links + option mlo 1, a non-MLO
+Wi-Fi 6E client (iPhone 15 Pro) associated on the 6 GHz affiliated link at 160 MHz
+HE-MCS10 NSS2 (~2.16 Gbps, -43 dBm, freq 6135/ch37). So the proper MLO setup (single
+SSID) serves BOTH Wi-Fi 7 (multi-link) and legacy single-link clients incl. 6E-on-6GHz.
+(Earlier note that a 6E client can't use the MLD 6 GHz link was WRONG - it can; which
+link a legacy client picks is the client's choice.) Standalone per-band APs are only
+needed if you want to pin a client to a specific band.
+Config model (this build uses the multi-radio-wiphy layout: radio0=5g & radio1=6g share
+one phy `path`, differ by `option radio 0/1`). An MLO AP is ONE wifi-iface spanning
+both radios:
+  config wifi-iface 'mlo0'
+      list device 'radio0'     # 5 GHz link
+      list device 'radio1'     # 6 GHz link
+      option mlo '1'
+      option mode 'ap'
+      option ssid '...'; option encryption 'sae'; option key '...'; option network 'lan'
+(and disable the standalone default_radio0/1 APs so their links are free). Live test
+config backed up on device at /etc/config/wireless.pre-mlo.
+
+**Caldata = non-issue for the PCIe radio:** `0:ART` (mmcblk0p20) is all 0xff
+(empty); the QCN9274 self-calibrates from board-2.bin + its own OTP (why 5 GHz
+already works). ART/caldata only matters for the integrated 2.4 GHz radio later.
+
+## A/B partition switching (BOOTCONFIG) — 2026-07-15
+
+To switch which slot boots WITHOUT power-cycling: `fw_setenv boot_part` does
+NOT work - U-Boot re-derives boot_part from the QCA **BOOTCONFIG** partition
+each boot ("Sync BOOTCONFIG to boot_part" in the log) and overwrites it. The
+authoritative selector is the **primaryboot flag** in `0:BOOTCONFIG`
+(/dev/mmcblk0p3) and its mirror `0:BOOTCONFIG1` (p4).
+
+BOOTCONFIG format: header `magic=0xa3a2a1a0, ver=41, numparts=8` (12 bytes),
+then 8 entries of `{char name[16]; u32 primaryboot}` (20 bytes each).
+primaryboot=0 -> boot base copy (slot 1); =1 -> boot the `_1` copy (slot 2).
+The bootloader partitions (DEVCFG/APDP/RPM/CDT/APPSBL) are pinned to slot 1
+(primaryboot=0, shared); only the **OS trio HLOS/rootfs/WIFIFW** flips per slot.
+Flag byte offsets: HLOS=0x80(128), rootfs=0x94(148), WIFIFW=0xa8(168).
+
+Slot map: slot 1 = 0:HLOS/rootfs/0:WIFIFW (p28/p29/p26) = VENDOR (QSDK 19.07);
+slot 2 = the `_1` copies (p30/p31/p27) = OpenWrt.
+
+Switch to VENDOR (slot 1):
+```sh
+for P in 3 4; do for OFF in 128 148 168; do
+  printf '\x00' | dd of=/dev/mmcblk0p$P bs=1 seek=$OFF count=1 conv=notrunc 2>/dev/null
+done; done; sync
+```
+Switch to OPENWRT (slot 2): same with `printf '\x01'`. Verify with
+`dd if=/dev/mmcblk0pP bs=1 skip=OFF count=1 | hexdump`. (Flashing OpenWrt from
+the vendor OTA to the inactive slot also flips BOOTCONFIG to slot 2 by itself.)
 
 ## Next steps
 

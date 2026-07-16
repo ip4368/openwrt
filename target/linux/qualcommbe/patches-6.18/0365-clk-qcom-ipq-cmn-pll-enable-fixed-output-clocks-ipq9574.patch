@@ -1,0 +1,71 @@
+From: Daniel Ip <kg4368@yahoo.com.hk>
+Date: Mon, 14 Jul 2026 19:10:00 +0100
+Subject: [PATCH] clk: qcom: ipq-cmn-pll: enable fixed output clocks on IPQ9574
+
+clk_cmn_pll_set_rate() configures the reference clock, resets the PLL and
+waits for lock, but never ungates the CMN PLL fixed output clocks
+(eth0/1/2-50mhz, eth-25mhz). The register that gates them,
+CMN_PLL_OUTPUT_RELATED_1 (0x79c), is left at its power-on value. On the
+RDP reference boards this is masked because their U-Boot already ungated
+these outputs while bringing up the ethernet clock tree.
+
+On a consumer board whose bootloader does not touch the ethernet clocks
+(Linksys MBE7000), the eth0-50mhz output that feeds the externally
+connected QCA8084 switch's XO reference pin never toggles. The switch's
+on-chip nss_cc sys_clk_src RCG (whose only parent is that XO) can then
+never complete its update handshake ("nss_cc_sys_clk_src: rcg didn't
+update its configuration"), and the whole switch clock tree stays down.
+
+Ungate the outputs after the PLL has locked, matching QSDK's
+qca_cmn_clk_config(). Verified on a live IPQ9574 (Linksys MBE7000): the
+working vendor firmware leaves 0x9b79c = 0xfc00, i.e. GENMASK(15, 10)
+set (25 MHz + the 50/62.5 MHz taps).
+
+Signed-off-by: Daniel Ip <kg4368@yahoo.com.hk>
+---
+--- a/drivers/clk/qcom/ipq-cmn-pll.c
++++ b/drivers/clk/qcom/ipq-cmn-pll.c
+@@ -82,6 +82,16 @@
+ #define CMN_PLL_DIVIDER_CTRL			0x794
+ #define CMN_PLL_DIVIDER_CTRL_FACTOR		GENMASK(9, 0)
+ 
++#define CMN_PLL_OUTPUT_RELATED_1		0x79c
++/*
++ * Output-enable bits for the CMN PLL fixed output clocks on IPQ9574
++ * (bit 15 = 25 MHz, bits 14/11/10 = the 50/62.5 MHz taps, bits 13/12 are
++ * the remaining eth taps). The working vendor firmware leaves 0x9b79c =
++ * 0xfc00 (all of GENMASK(15,10) set); QSDK's qca_cmn_clk_config() sets the
++ * same bits after the PLL reset.
++ */
++#define CMN_PLL_OUTPUT_CLK_EN			GENMASK(15, 10)
++
+ /**
+  * struct cmn_pll_fixed_output_clk - CMN PLL output clocks information
+  * @id:	Clock specifier to be supplied
+@@ -282,9 +292,23 @@
+ 		return ret;
+ 
+ 	/* Stability check of CMN PLL output clocks. */
+-	return regmap_read_poll_timeout(cmn_pll->regmap, CMN_PLL_LOCKED, val,
+-					(val & CMN_PLL_CLKS_LOCKED),
+-					100, 100 * USEC_PER_MSEC);
++	ret = regmap_read_poll_timeout(cmn_pll->regmap, CMN_PLL_LOCKED, val,
++				       (val & CMN_PLL_CLKS_LOCKED),
++				       100, 100 * USEC_PER_MSEC);
++	if (ret)
++		return ret;
++
++	/*
++	 * Ungate the CMN PLL fixed output clocks. Mainline assumes the
++	 * bootloader already enabled these; Linksys U-Boot (unlike the RDP
++	 * reference bootloader) does not touch the ethernet clock tree, so the
++	 * eth0-50mhz output that feeds the external QCA8084 switch's XO pin
++	 * never toggles and the switch's on-chip nss_cc sys_clk_src RCG can
++	 * never lock ("rcg didn't update"). Enable them here, matching QSDK's
++	 * qca_cmn_clk_config() and the vendor firmware's 0x9b79c = 0xfc00.
++	 */
++	return regmap_update_bits(cmn_pll->regmap, CMN_PLL_OUTPUT_RELATED_1,
++				  CMN_PLL_OUTPUT_CLK_EN, CMN_PLL_OUTPUT_CLK_EN);
+ }
+ 
+ static const struct clk_ops clk_cmn_pll_ops = {

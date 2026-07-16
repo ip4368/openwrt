@@ -24,11 +24,12 @@ define Device/linksys_mbe7000
 	# bootloader aborts with "Config not available". Confirmed on a live MBE70WRT.
 	DEVICE_DTS_CONFIG := config@1
 	SOC := ipq9574
-	# NOTE: the two PCIe radios (QCN9274) additionally need board-specific
-	# calibration data. An ipq-wifi-linksys_mbe7000 board-2.bin package
-	# (extracted from vendor firmware) still has to be created and appended
-	# here; the stock qcn9274 board-2.bin is unlikely to match this board.
-	DEVICE_PACKAGES := kmod-ath12k ath12k-firmware-qcn9274
+	# The QCN9274 PCIe radio needs board-specific data (the stock qcn9274
+	# board-2.bin has no entry for this board's qmi-board-id=255). The
+	# ipq-wifi-mbe7000 package supplies a board-2.bin built from the vendor
+	# BDF + regdb, keyed to board-id 255, and overrides the generic one.
+	# Wifi also requires CONFIG_CMA=y (config-6.18) for the fw host memory.
+	DEVICE_PACKAGES := kmod-ath12k ath12k-firmware-qcn9274 ipq-wifi-linksys_mbe7000
 	# Combined single-file factory image (kernel "hlos" + "rootfs" as named
 	# QSDK-FIT sub-images), same as 8devices_kiwi-dvk and the same structure
 	# as the MBE70WRT vendor firmware. Overrides the rootfs-only factory.bin

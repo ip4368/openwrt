@@ -1,0 +1,60 @@
+#!/bin/sh /etc/rc.common
+# Reset the bootloader dual-boot boot counter after a successful boot, so
+# U-Boot's auto_recovery does not fail the unit over to the other partition
+# after a few reboots.
+#
+# On the Linksys MBE7000 (Velop Pro 7, and the wider Linksys MX family) the
+# counter is NOT a U-Boot text env variable - `fw_setenv boot_count 0` is a
+# no-op here (confirmed: `fw_printenv boot_count` -> "not defined", while the
+# text env in u_env only holds boot_part / auto_recovery / boot_part_ready).
+#
+# The real counter is a binary record in the 's_env' eMMC partition, in the
+# Linksys bootcounter format (little-endian):
+#     struct { u32 magic = 0x20110811; u32 count; u32 checksum = magic + count; }
+# The stock firmware clears it at the end of boot via `recovery_emmc -c`,
+# which leaves exactly one count=0 record at offset 0:
+#     11 08 11 20  00 00 00 00  11 08 11 20
+# We reproduce that byte-for-byte here. (OpenWrt's `mtd resetbc s_env` does
+# the same thing but only works on MTD/NAND, not on this eMMC block device.)
+
+START=99
+
+boot() {
+	case "$(board_name)" in
+	linksys,mbe7000)
+		reset_linksys_emmc_bootcount
+		;;
+	esac
+}
+
+reset_linksys_emmc_bootcount() {
+	local part
+
+	part="$(find_mmc_part s_env)"
+
+	# Fallback: resolve the s_env partition by GPT PARTNAME if the helper
+	# could not (e.g. missing by-partlabel symlinks).
+	if [ -z "$part" ] || [ ! -b "$part" ]; then
+		local uev name
+		for uev in /sys/class/block/mmcblk*p*/uevent; do
+			name="$(sed -n 's/^PARTNAME=//p' "$uev" 2>/dev/null)"
+			[ "$name" = "s_env" ] || continue
+			part="/dev/$(basename "$(dirname "$uev")")"
+			break
+		done
+	fi
+
+	if [ -z "$part" ] || [ ! -b "$part" ]; then
+		logger -t bootcount "s_env partition not found; boot counter NOT reset"
+		return 1
+	fi
+
+	# Invalidate any records accumulated this boot cycle, then write a single
+	# count=0 bootcounter record at offset 0, matching `recovery_emmc -c`.
+	dd if=/dev/zero of="$part" bs=4096 count=1 conv=notrunc 2>/dev/null
+	printf '\021\010\021\040\000\000\000\000\021\010\021\040' | \
+		dd of="$part" bs=12 count=1 conv=notrunc 2>/dev/null
+	sync
+
+	logger -t bootcount "reset dual-boot boot counter to 0 (s_env=$part)"
+}
