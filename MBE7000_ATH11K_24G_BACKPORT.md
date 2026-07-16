@@ -210,8 +210,26 @@ radios auto-up from a clean image. Only residual: "htt event 48 not handled" (ha
 => 2.4 GHz backport COMPLETE + permanent. Build r35286+16, factory sha256
 1c1c30c03a94b7cc37b2b8db7315393221cfcf8de4c87dc086ab46d4b2bd187b. All WIP is now uncommitted
 in the tree - ready to commit as a milestone.
-POLISH LEFT (optional): htt event 48 warning; consider MAC patching if the caldata MAC is
-wrong/duplicate; bring up a 2.4 GHz AP to confirm operationally (radio+band verified).
+POLISH LEFT (optional): htt event 48 warning (harmless QSDK HTT msg mainline ath11k
+doesn't handle); bring up a 2.4 GHz AP to confirm operationally (radio+band verified).
+
+### MAC ADDRESSES - factory MACs wired up 2026-07-17 (ethernet + 2.4G; 5/6G TODO)
+Out of the box every interface used a bogus MAC: LAN/WAN random (locally-administered),
+and the wifi radios the Atheros DEFAULT 00:03:7f:12:XX:XX (duplicated-last-octet =
+"no real MAC programmed"). The real factory base MAC is stored as text
+"hw_mac_addr=80:69:1A:B2:C1:07" (Linksys OUI) in the **devinfo** eMMC partition
+(find_mmc_part devinfo; also has serial_number, cert_region, uuid_key). u_env ethaddr =
+base+1 (...08). Scheme wired up (convention, matches vendor for wan): lan=base(+0),
+wan=+1, 2.4G=+2, [5G=+3, 6G=+4 reserved].
+- Ethernet: base-files/etc/board.d/02_network reads hw_mac_addr from devinfo
+  (mbe7000_base_mac helper) and ucidef_set_interface_macaddr lan/wan. Result on clean
+  flash: br-lan 80:69:1a:b2:c1:07, wan ...08.
+- 2.4G (ath11k): the 11-ath11k-caldata hotplug now also patches the caldata MAC via
+  ath11k_patch_mac "$(macaddr_add base 2)" 0 + ath11k_set_macflag. Verified on clean
+  flash: phy0 = 80:69:1a:b2:c1:09.
+- 5/6G (ath12k): STILL default (00:03:7f:...) - ath12k has NO caldata-patch hook like
+  ath11k; its MAC comes from board-2.bin/OTP/QMI. TODO: a DTS local-mac-address/nvmem
+  on the QCN9274 wifi node, or a board-2.bin MAC field. Separate (harder) task.
 
 ## 7b. RESULT - 2.4 GHz WORKS on HW (2026-07-17)
 Full bring-up validated live. Boot sequence (all clean): remoteproc0 q6wcss boots
