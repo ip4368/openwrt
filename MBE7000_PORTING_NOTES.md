@@ -1654,6 +1654,10 @@ rmmod/modprobe -> "duplicate filename mhi0_IPCR" + QMI -11, needs cold boot):
    Added vendor `qcn9224/AH/regdb.bin` into the SAME board-2.bin as a regdb IE
    named by the board name. Current staged board-2.bin md5
    61b541678b1c4fe0ef3c8b6f74b4d4ba (magic OK + board + regdb).
+   NOTE (2026-07-17): the "AH" in the path is just the regdb build/variant, NOT a
+   region restriction — this regdb is a FULL ~206-country world DB (contains GB/US/
+   DE/HK). It is not the cause of the 5 GHz DFS failure; see the re-diagnosed
+   "5 GHz DFS / regulatory" section below.
 Staged at /lib/firmware/ath12k/QCN9274/hw2.0/board-2.bin on the running unit
 (overlay persists; original saved as board-2.bin.orig). NEXT: cold-reboot test.
 
@@ -2034,21 +2038,68 @@ the vendor OTA to the inactive slot also flips BOOTCONFIG to slot 2 by itself.)
    trying `sysupgrade` or factory flashing.
 5. Update this file and the DTS as facts get confirmed or corrected.
 
-## 5 GHz DFS / regulatory (ath12k) — diagnosed 2026-07-17 [NOT FIXED, parked]
-Symptom: 5 GHz "auto channel" shows channel 0 / AP won't start when a country is set.
-ROOT CAUSE (not a DFS bug): ath12k gets NO valid reg rules from the QCN6274 firmware for
-any *set* country -> "No reg rules available" (wmi.c ath12k_pull_reg_chan_list_ext: 
-total_reg_rules==0) -> "Timeout while waiting for regulatory update" -> driver falls back
-to its built-in US default. hostapd(country)/driver(US) mismatch -> DFS CAC on the
-ACS-picked DFS channel fails (start_dfs_cac -1). 2.4G/6G/5G-UNII1 work because they need
-no DFS CAC. Tested GB, DE, HK -> ALL fail (reg stays US).
-WHY: ath12k loads the regdb from INSIDE board-2.bin (ATH12K_BD_IE_REGDB); our board-2.bin's
-embedded regdb is a stub/wrong (only satisfied the loader, yields 0 rules for every country).
-The vendor firmware is an APAC/HK variant: it ships per-region regdb qcn9224/{AH,AU,HK,SG}/
-regdb.bin (25656 B) - NO GB/EU. So GB can NEVER work on this fw; correct country = HK.
-FIX (when revisited): rebuild the ath12k board-2.bin embedding the real vendor
-qcn9224/HK/regdb.bin (pulled to scratchpad/vregdb; also on vendor rootfs mmcblk0p29
-/lib/firmware/qcn9224/HK/regdb.bin) via the ATH12K-magic bdencoder, set country HK, retest
-(iw phy1 reg get should show HK, DFS CAC should proceed). ath11k 2.4G analog: IPQ9574/HK.
-IMMEDIATE WORKAROUND (no rebuild): 5 GHz on a non-DFS channel <=80 MHz (ch 36/40/44/48,
-htmode EHT80) - comes up without CAC regardless of the regdb issue.
+## 5 GHz DFS / regulatory (ath12k) — RE-DIAGNOSED 2026-07-17 [NOT FIXED, parked]
+Symptom: with a country set, 5 GHz "auto channel" picks a DFS channel (e.g. ch144/freq
+5720) and the AP won't start:
+  ath12k_pci ...: vdev start resp error status 4 (invalid regdomain)
+  ath12k_pci ...: failed to start vdev 0 addr ...:0a on freq 5720: -22
+`iw reg get` shows `phy#1 (self-managed) country US` no matter what country you set;
+setting GB/DE/HK/US makes NO difference (verified live: US also fails identically).
+
+### CORRECTION — the old "APAC-locked / stub regdb" theory is WRONG (disproven 2026-07-17)
+The previous version of this note blamed a "stub/APAC-only regdb with no GB/EU". That is
+FALSE. Facts, all verified this session:
+- Our shipped board-2.bin's embedded regdb (ATH12K_BD_IE_REGDB) is a **valid full world DB**:
+  25656 B, ~206 country codes, and it **DOES contain GB, US, DE, HK** (checked by parsing
+  the IE and searching for the alpha2 codes). It is ~identical to the QSDK
+  WLAN.WBE.1.0-03208 regdb.bin (only 445/25656 bytes differ).
+- linux-firmware's own QCN9274 board-2.bin carries a *different* regdb (25656 B, differs
+  from ours in 1732/25656 bytes) — but same size, same structure, same country table
+  layout. The variants differ only in **rule VALUES**, never in **wire format**.
+- The per-region vendor files `qcn9224/{AH,AU,HK,SG}/regdb.bin` were a RED HERRING: they are
+  not what feeds ath12k's board-2.bin regdb IE, and "no GB in them" told us nothing.
+
+### What is actually wrong (real root cause)
+The failure is a **WMI regulatory EVENT parse failure**, not missing regdb DATA. At boot:
+  ath12k_pci ...: failed to parse tlv -22            (ath12k_wmi_tlv_parse -> -EINVAL)
+  ath12k_pci ...: failed to extract regulatory info from received event   (WARN wmi.c:6806,
+                  in ath12k_pull_reg_chan_list_ext_update_ev)
+The chip's firmware SENDS a REG_CHAN_LIST_CC_EXT event whose TLV layout mainline ath12k
+6.18 cannot decode -> reg_info is dropped -> zero rules ever installed -> the self-managed
+phy stays on its built-in US fallback -> any *set* country times out
+("Timeout while waiting for regulatory update") -> DFS vdev start is rejected with
+"invalid regdomain". Non-DFS channels don't need a firmware regdomain, so they start fine.
+Because it is an event **structure** mismatch, swapping the regdb (from linux-fw / QSDK /
+vendor HK) CANNOT fix it — every regdb variant is structurally identical; only values change.
+
+### Why: it tracks to our FORCED DUAL-MAC config, not the firmware provenance
+- `firmware-2.bin` on the device is byte-identical (md5 42e29e40...) to **upstream
+  linux-firmware `WLAN.WBE.1.6-01243`** — i.e. the mainline-blessed firmware, NOT a vendor
+  blob. Upstream firmware + mainline ath12k are supposed to be a matched pair.
+- The one non-standard thing we do is force the single QCN6274 into **dual-MAC** (5+6 GHz on
+  one chip) via `qcom,ath12k-force-dualmac` + the ath12k patch. In dual-MAC the firmware
+  emits **per-phy** reg events; the leading hypothesis is that this forced mode is what
+  produces the reg-event layout mainline's parser rejects.
+- Corroboration (OpenWrt PR #20373, TP-Link BE800, working ath12k Wi-Fi): it uses the SAME
+  mainline ath12k + same WLAN.WBE firmware family and regulatory JUST WORKS — because it runs
+  every radio **single-MAC** (dedicated chip per band) and does zero special reg handling.
+  Nobody upstream forces single-chip dual-MAC, so nobody has solved its reg-event parse.
+  (PR #20778 Archer BE550 = same radios as us but Wi-Fi non-functional; no reg content.)
+
+### Next diagnostic (isolation test, when revisited)
+Temporarily DROP `qcom,ath12k-force-dualmac` (single-MAC, 5 GHz only), rebuild, reboot:
+- if the `parse tlv -22` / reg failure disappears and DFS/auto works -> CONFIRMED it's the
+  dual-MAC hack; real fix = a mainline ath12k patch to parse the dual-MAC reg event (or accept
+  the trade-off: 6 GHz **xor** DFS/upper-5 GHz).
+- if it still fails single-MAC -> it's a plain mainline-ath12k-vs-WBE1.6 reg-event gap.
+
+### Cleaner board-data mechanism (maintainability, does NOT fix DFS)
+PR #20373 reads `qcom,board_id` from DT via patch `300-wifi-ath12k-board_id-from-device-tree`
+instead of hand-building a board-2.bin keyed to the default board-id 255 (our approach).
+Worth adopting when we upstream, but it is orthogonal to the regulatory bug.
+
+### IMMEDIATE WORKAROUND (no rebuild, region-independent, verified)
+Pin 5 GHz to a non-DFS channel <=80 MHz (ch 36/40/44/48, htmode EHT80): comes up without
+CAC regardless of the reg-event bug. Verified live: ch36/EHT80 -> AP up, txpower a sane
+25 dBm (vs the bogus 63 dBm seen on the failing DFS path). Best default for a generic image.
+Cost: loses upper-5 GHz (ch100-144) + DFS.
