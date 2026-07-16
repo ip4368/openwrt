@@ -29,7 +29,8 @@ define Device/linksys_mbe7000
 	# ipq-wifi-mbe7000 package supplies a board-2.bin built from the vendor
 	# BDF + regdb, keyed to board-id 255, and overrides the generic one.
 	# Wifi also requires CONFIG_CMA=y (config-6.18) for the fw host memory.
-	DEVICE_PACKAGES := kmod-ath12k ath12k-firmware-qcn9274 ipq-wifi-linksys_mbe7000
+	DEVICE_PACKAGES := kmod-ath12k ath12k-firmware-qcn9274 ipq-wifi-linksys_mbe7000 \
+		kmod-ath11k-ahb ath11k-firmware-ipq9574-mbe7000
 	# Combined single-file factory image (kernel "hlos" + "rootfs" as named
 	# QSDK-FIT sub-images), same as 8devices_kiwi-dvk and the same structure
 	# as the MBE70WRT vendor firmware. Overrides the rootfs-only factory.bin

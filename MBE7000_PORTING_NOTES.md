@@ -1764,6 +1764,54 @@ but more tractable ath11k port; still no upstream ipq95xx ath11k. Feasibility = 
 (was wrongly "big ath12k reverse-engineering").
 
 2.4 GHz FEASIBILITY - SCOPED 2026-07-17: ath11k (Wi-Fi6 Pine) port, medium effort.
+
+### 2.4 GHz ath11k SPIKE - 2026-07-17: VERDICT = GO (feasible backport, medium)
+- ath11k AHB model MATCHES vendor: ath11k_core_get_rproc() reads DT `qcom,rproc` phandle
+  -> rproc_boot() the external Q6 (qcom-q6v5-wcss). Vendor DT is exactly this (c000000.wifi
+  + cd00000.remoteproc). So DTS is a known pattern (mirror ipq8074.dtsi wifi+q6).
+- kmod-ath11k-ahb IS built in our mac80211 pkg (ath.mk: ATH11K_AHB, ath11k_ahb.ko) - enable it.
+- ath11k SoC hw_params live in core.c (IPQ8074/6018/QCA6390/QCN9074/WCN6855); each SoC needs
+  hw_ops+regs+ce_config+svc_to_ce+dir. THE unknown was the IPQ95xx reg maps.
+- RESOLVED: a REFERENCE ath11k IPQ9574 patch EXISTS (kernel mailing list + OpenWrt community;
+  Xiaomi BE7000 PR #20604, Spectrum SBE1V1K thread / andrewjlamarche, TP-Link BE800 #20373).
+  Tested on IPQ9554 (our bin): AHB radio comes up + broadcasts SSID. KNOWN BUG: missing
+  max_tx_ring -> kernel panic on 2.4G client connect (fix known/discussed on forum).
+- Firmware extractable from vendor /lib/firmware/IPQ9574/ (q6_fw/m3 for remoteproc; bdwlan
+  -> board-2.bin like we did for QCN9274; caldata.bin; regdb.bin).
+### 2.4 GHz IMPLEMENTATION - recipe + progress (2026-07-17)
+The internal radio is a QCN5024-class Wi-Fi 6 radio (mrnuke's patch confirms:
+"IPQ9574 SoC coupled with Wi-Fi 6 chipsets like QCN5024 over AHB"). Two upstream
+series to backport:
+
+(A) ath11k IPQ9574 - mrnuke (Alexandru Gagniuc), linux-wireless v2 2-patch series:
+  - patchwork 20260109044457.3074510-3 (2/2 driver), -2 (1/2 bindings).
+  - DONE: package/kernel/mac80211/patches/ath11k/600-ath11k-support-ipq9574.patch
+    (mrnuke 2/2 driver: ahb.c of_match+probe, core.c hw_params, core.h enum, hw.c
+    ipq9574_ops, hw.h extern; reuses ipq8074 regs/ce, ipq6018 svc_to_ce; mac->PHY-B;
+    bdf_addr 0x4B700000; max_radios 1). ADDED the max_tx_ring fix (mrnuke omitted
+    .max_tx_ring -> 0 -> panic on 2.4G client connect; set = DP_TCL_NUM_RING_MAX).
+    Verified applies clean to backports-6.18.26. (bindings 1/2 = Documentation only,
+    optional.)
+
+(B) Q6 WCSS SECURE PIL remoteproc - patchwork series 1041678 v10 (13 Jan 2026), 6 patches.
+  Our kernel 6.18.38 has NEITHER the secure PIL driver NOR the ipq9574 q6 nodes
+  (qcom_q6v5_wcss.c only does ipq8074/qcs404). NEED to backport 3 of the 6:
+    1/6 firmware: qcom_scm ipq5332 (adds SCM calls) -> drivers/firmware/qcom/qcom_scm.{c,h}
+    3/6 remoteproc: hexagon WCSS SECURE PIL -> NEW drivers/remoteproc/qcom_q6v5_wcss_sec.c
+        (+ Kconfig/Makefile, include/linux/remoteproc.h)
+    6/6 arm64: dts: ipq9574 q6 nodes -> ipq9574.dtsi (remoteproc@cd00000 + memory)
+  SKIP 2/6 (bindings doc), 4/6 (ipq5018 dts), 5/6 (ipq5332 dts). RISK: series targets
+  ~6.13; SCM + remoteproc.h core API may have drifted by 6.18 -> adaptation likely.
+  Fetched to scratchpad/ipq9574-remoteproc-series.mbox (needs proper per-message split).
+
+### 2.4 GHz IMPLEMENTATION - see dedicated doc
+Full recipe, patch inventory, firmware/DTB extraction methods, the complete wifi@c000000
+node (53 interrupts + addresses + board_id 0x20), memory map, remaining steps, and risks
+are in **`MBE7000_ATH11K_24G_BACKPORT.md`** (repo root). WIP/uncommitted. Summary: it's an
+ath11k (Wi-Fi 6 Pine/QCN5024) port = backport of mrnuke's ath11k IPQ9574 series (+max_tx_ring
+fix) + the secure-PIL Q6 remoteproc series (patchwork 1041678). Patches already in tree
+(600-ath11k-support-ipq9574 in mac80211; 0366/0367/0368 in patches-6.18) and apply clean to
+6.18. Remaining: board DTS wifi node + reserved-mem, kconfig, firmware packaging, build/flash.
 The MBE7000's 2.4 GHz is the IPQ9574 ON-DIE radio (wifi@c000000, qcom,cnss-qca9574, via
 Q6). Mainline has ZERO support for it: ath12k AHB of_match = ONLY qcom,ipq5332-wifi
 (+IPQ5424); ath11k AHB = ipq8074/6018/5018; NO ipq9574 hw_rev in ath12k hw.c; mainline
