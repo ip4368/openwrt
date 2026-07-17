@@ -1,0 +1,46 @@
+From: Daniel Ip <kg4368@yahoo.com.hk>
+Subject: [PATCH] wifi: ath12k: allow forcing dual-MAC firmware from device tree
+
+ath12k_mhi_register() picks the dual-MAC AMSS firmware (bringing up the
+2nd MAC, e.g. the 6 GHz radio of a split-PHY QCN9274) only when the chip's
+OTP board_id has the OTP_VALID_DUALMAC_BOARD_ID_MASK bit set.
+
+Some boards run the QCN9274 in dual-MAC mode but leave that OTP bit unset;
+the vendor firmware selects the dual-MAC image via its own board config
+rather than the OTP. On the Linksys MBE7000 the OTP board_id reads 0x0, so
+mainline falls back to the single-MAC image and only 5 GHz comes up (the
+2nd MAC fails with "HTC Service WMI MAC1 connect request failed -71").
+
+Allow the device tree to force dual-MAC selection via the
+"qcom,ath12k-force-dualmac" property on the wifi node. of_property_read_bool()
+is NULL-safe, so non-DT QCN9274 cards are unaffected. The stock QCN9274
+firmware-2.bin already carries the AMSS_DUALMAC image and advertises
+FW_FEATURE_MLO, so no firmware change is needed.
+
+Signed-off-by: Daniel Ip <kg4368@yahoo.com.hk>
+---
+--- a/drivers/net/wireless/ath/ath12k/mhi.c
++++ b/drivers/net/wireless/ath/ath12k/mhi.c
+@@ -7,6 +7,7 @@
+ #include <linux/msi.h>
+ #include <linux/pci.h>
+ #include <linux/firmware.h>
++#include <linux/of.h>
+
+ #include "core.h"
+ #include "debug.h"
+@@ -344,6 +345,14 @@
+ 		}
+ 	}
+
++	/* Some boards (e.g. Linksys MBE7000) run the QCN9274 in dual-MAC mode
++	 * but leave the OTP dual-MAC board-id bit unset (the vendor selects the
++	 * dual-MAC firmware via its own board config, not the OTP). Let the
++	 * device tree force dual-MAC so the 2nd MAC (e.g. 6 GHz) comes up.
++	 */
++	if (of_property_read_bool(ab->dev->of_node, "qcom,ath12k-force-dualmac"))
++		dualmac = true;
++
+ 	if (dualmac) {
+ 		if (ab->fw.amss_dualmac_data && ab->fw.amss_dualmac_len > 0) {
+ 			/* use MHI firmware file from firmware-N.bin */

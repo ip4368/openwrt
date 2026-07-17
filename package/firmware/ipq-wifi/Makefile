@@ -13,6 +13,14 @@ PKG_FLAGS:=nonshared
 
 include $(INCLUDE_DIR)/package.mk
 
+# Pull in board files added locally under ./files/ (for boards whose data is
+# not yet in the upstream qca-wireless.git source), so the per-package
+# install-overlay wildcard $(PKG_BUILD_DIR)/board-<device>.* finds them.
+define Build/Prepare
+	$(Build/Prepare/Default)
+	$(if $(wildcard $(CURDIR)/files/board-*),$(CP) $(CURDIR)/files/board-* $(PKG_BUILD_DIR)/)
+endef
+
 define Build/Compile
 endef
 
@@ -52,6 +60,7 @@ ALLWIFIBOARDS:= \
 	jdcloud_re-ss-01 \
 	link_nn6000 \
 	linksys_homewrk \
+	linksys_mbe7000 \
 	linksys_mr5500 \
 	linksys_mr6350 \
 	linksys_mr7350 \
@@ -249,6 +258,7 @@ $(eval $(call generate-ipq-wifi-package,jdcloud_re-cs-02,JDCloud RE-CS-02))
 $(eval $(call generate-ipq-wifi-package,jdcloud_re-ss-01,JDCloud RE-SS-01))
 $(eval $(call generate-ipq-wifi-package,link_nn6000,Link NN6000))
 $(eval $(call generate-ipq-wifi-package,linksys_homewrk,Linksys HomeWRK))
+$(eval $(call generate-ipq-wifi-package,linksys_mbe7000,Linksys MBE7000))
 $(eval $(call generate-ipq-wifi-package,linksys_mr5500,Linksys MR5500))
 $(eval $(call generate-ipq-wifi-package,linksys_mr6350,Linksys MR6350))
 $(eval $(call generate-ipq-wifi-package,linksys_mr7350,Linksys MR7350))
