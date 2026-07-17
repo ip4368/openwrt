@@ -1,0 +1,66 @@
+#!/bin/sh
+# Show or switch the Linksys MBE7000 A/B boot slot.
+#
+#   mbe7000-bootslot           show the current boot slot
+#   mbe7000-bootslot a | 0     boot slot A (0:HLOS/rootfs,     mmcblk0p28/p29)
+#   mbe7000-bootslot b | 1     boot slot B (0:HLOS_1/rootfs_1, mmcblk0p30/p31)
+#
+# The vendor U-Boot (bootipq) picks the OS slot from the "primaryboot" flags in
+# the 0:BOOTCONFIG / 0:BOOTCONFIG1 partitions: offset 128 = HLOS (kernel),
+# 148 = rootfs; 0 = slot A, 1 = slot B (168 = WIFIFW is left untouched). This
+# writes both copies. Reboot to apply; auto_recovery falls back to the other
+# slot if the selected one fails to boot.
+
+. /lib/functions.sh
+
+[ "$(board_name)" = "linksys,mbe7000" ] || {
+	echo "${0##*/}: only supported on linksys,mbe7000" >&2
+	exit 1
+}
+
+bc1=$(find_mmc_part "0:BOOTCONFIG")
+bc2=$(find_mmc_part "0:BOOTCONFIG1")
+[ -e "$bc1" ] || { echo "${0##*/}: 0:BOOTCONFIG not found" >&2; exit 1; }
+
+read_slot() {
+	dd if="$bc1" bs=1 count=1 skip=128 2>/dev/null | hexdump -e '"%d"'
+}
+
+set_slot() {
+	local s="$1" p o
+	for p in "$bc1" "$bc2"; do
+		[ -e "$p" ] || continue
+		for o in 128 148; do
+			printf "\\x0${s}" | \
+				dd of="$p" bs=1 count=1 seek="$o" conv=notrunc 2>/dev/null
+		done
+	done
+	sync
+}
+
+slot_desc() {
+	case "$1" in
+	0) echo "A (0:HLOS/rootfs, mmcblk0p28/p29)" ;;
+	1) echo "B (0:HLOS_1/rootfs_1, mmcblk0p30/p31)" ;;
+	*) echo "unknown ($1)" ;;
+	esac
+}
+
+case "$1" in
+""|show|-s|status)
+	cur=$(read_slot)
+	echo "current boot slot: $cur -> slot $(slot_desc "$cur")"
+	;;
+a|A|0)
+	set_slot 0
+	echo "boot slot set to A (mmcblk0p28/p29) - reboot to apply"
+	;;
+b|B|1)
+	set_slot 1
+	echo "boot slot set to B (mmcblk0p30/p31) - reboot to apply"
+	;;
+*)
+	echo "usage: ${0##*/} [a|b]   (no argument shows the current slot)" >&2
+	exit 1
+	;;
+esac
