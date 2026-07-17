@@ -1,0 +1,645 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include "ipq9574.dtsi"
+
+/*
+ * Board data derived from decompiling the FIT-embedded device tree of the
+ * vendor firmware (Linksys MBE7000_1.0.10.215314), which ships the
+ * near-stock Qualcomm IPQ9574/AP-AL02-C4 reference platform DT (model =
+ * "Qualcomm Technologies, Inc. IPQ9574/AP-AL02-C4"). Storage, console,
+ * button GPIOs and PCIe wifi slot usage below come directly from that
+ * dump. No gpio-leds nodes exist anywhere in the vendor kernel DT -
+ * LEDs are presumably driven by the onboard NXP K32W061 (Zigbee/Thread
+ * coprocessor on UART4, gpio50-53, reset gpio31, isp gpio57 - not wired
+ * up here) or another out-of-kernel mechanism, so none are defined yet.
+ *
+ * Ethernet mirrors the IPQ9574 RDP433 reference exactly:
+ *   - LAN: Qualcomm QCA8075 (Malibu) quad gigabit PHY package at MDIO
+ *     0x10-0x13, over UNIPHY0/PCS0 channels 0-3 in QSGMII (ports 1-4).
+ *   - WAN: discrete Qualcomm QCA8081 2.5G PHY at MDIO 0x1c, over
+ *     UNIPHY2/PCS2 in USXGMII (port 6).
+ * Both PHYs are identified from hardware, not assumed: U-Boot reads PHY
+ * IDs 004d.d0b1 (QCA8075) and 004d.d101 (QCA8081); the vendor QSDK kernel
+ * loads the "malibu" + "qca808x" drivers and never a QCA8084/manhattan.
+ * See MBE7000_PORTING_NOTES.md for the full identification evidence.
+ */
+
+/ {
+	model = "Linksys MBE7000";
+	compatible = "linksys,mbe7000", "qcom,ipq9574";
+
+	aliases {
+		serial0 = &blsp1_uart2;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	regulator_fixed_3p3: s3300 {
+		compatible = "regulator-fixed";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-boot-on;
+		regulator-always-on;
+		regulator-name = "fixed_3p3";
+	};
+
+	regulator_fixed_0p925: s0925 {
+		compatible = "regulator-fixed";
+		regulator-min-microvolt = <925000>;
+		regulator-max-microvolt = <925000>;
+		regulator-boot-on;
+		regulator-always-on;
+		regulator-name = "fixed_0p925";
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-0 = <&gpio_keys_default>;
+		pinctrl-names = "default";
+
+		reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&tlmm 40 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_KEY>;
+			debounce-interval = <60>;
+		};
+
+		wps {
+			label = "wps";
+			linux,code = <KEY_WPS_BUTTON>;
+			gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_KEY>;
+			debounce-interval = <60>;
+		};
+	};
+
+	/*
+	 * Front-panel RGBW status LED, driven by the SoC PWM block (4 channels
+	 * at gpio44-47). Channel/pin/colour mapping taken from the MBE70WRT
+	 * vendor DT (red=ch0/gpio44, green=ch1/gpio45, blue=ch2/gpio46,
+	 * white=ch3/gpio47; period 1250000 ns). Note this tree's ipq9574.dtsi
+	 * pwm node uses #pwm-cells = <3> (channel, period, flags), unlike the
+	 * QSDK's 2-cell form. Polarity assumed normal (active-high); flip to
+	 * PWM_POLARITY_INVERTED if the LED turns out common-anode on hardware.
+	 */
+	pwm-leds {
+		compatible = "pwm-leds";
+
+		led-red {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_STATUS;
+			pwms = <&pwm 0 1250000 0>;
+			max-brightness = <255>;
+		};
+
+		led-green {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_STATUS;
+			pwms = <&pwm 1 1250000 0>;
+			max-brightness = <255>;
+		};
+
+		led-blue {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_STATUS;
+			pwms = <&pwm 2 1250000 0>;
+			max-brightness = <255>;
+		};
+
+		led-white {
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_STATUS;
+			pwms = <&pwm 3 1250000 0>;
+			max-brightness = <255>;
+		};
+	};
+};
+
+&blsp1_uart2 {
+	pinctrl-0 = <&uart2_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&qcom_ppe {
+	ethernet-ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+			phy-mode = "qsgmii";
+			managed = "in-band-status";
+			label = "lan1";
+			phy-handle = <&phy0>;
+			pcs-handle = <&pcs0_ch0>;
+			clocks = <&nsscc NSS_CC_PORT1_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT1_RX_CLK>,
+				 <&nsscc NSS_CC_PORT1_TX_CLK>;
+			clock-names = "mac",
+				      "rx",
+				      "tx";
+			resets = <&nsscc PORT1_MAC_ARES>,
+				 <&nsscc PORT1_RX_ARES>,
+				 <&nsscc PORT1_TX_ARES>;
+			reset-names = "mac",
+				      "rx",
+				      "tx";
+		};
+
+		port@2 {
+			reg = <2>;
+			phy-mode = "qsgmii";
+			managed = "in-band-status";
+			label = "lan2";
+			phy-handle = <&phy1>;
+			pcs-handle = <&pcs0_ch1>;
+			clocks = <&nsscc NSS_CC_PORT2_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT2_RX_CLK>,
+				 <&nsscc NSS_CC_PORT2_TX_CLK>;
+			clock-names = "mac",
+				      "rx",
+				      "tx";
+			resets = <&nsscc PORT2_MAC_ARES>,
+				 <&nsscc PORT2_RX_ARES>,
+				 <&nsscc PORT2_TX_ARES>;
+			reset-names = "mac",
+				      "rx",
+				      "tx";
+		};
+
+		port@3 {
+			reg = <3>;
+			phy-mode = "qsgmii";
+			managed = "in-band-status";
+			label = "lan3";
+			phy-handle = <&phy2>;
+			pcs-handle = <&pcs0_ch2>;
+			clocks = <&nsscc NSS_CC_PORT3_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT3_RX_CLK>,
+				 <&nsscc NSS_CC_PORT3_TX_CLK>;
+			clock-names = "mac",
+				      "rx",
+				      "tx";
+			resets = <&nsscc PORT3_MAC_ARES>,
+				 <&nsscc PORT3_RX_ARES>,
+				 <&nsscc PORT3_TX_ARES>;
+			reset-names = "mac",
+				      "rx",
+				      "tx";
+		};
+
+		port@4 {
+			reg = <4>;
+			phy-mode = "qsgmii";
+			managed = "in-band-status";
+			label = "lan4";
+			phy-handle = <&phy3>;
+			pcs-handle = <&pcs0_ch3>;
+			clocks = <&nsscc NSS_CC_PORT4_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT4_RX_CLK>,
+				 <&nsscc NSS_CC_PORT4_TX_CLK>;
+			clock-names = "mac",
+				      "rx",
+				      "tx";
+			resets = <&nsscc PORT4_MAC_ARES>,
+				 <&nsscc PORT4_RX_ARES>,
+				 <&nsscc PORT4_TX_ARES>;
+			reset-names = "mac",
+				      "rx",
+				      "tx";
+		};
+
+		/*
+		 * WAN, via a discrete QCA8081 2.5G PHY on &mdio (raw bus address
+		 * 0x1c) rather than the LAN switch package - modeled after
+		 * qcom_rdp433's port6/wan (over pcs2_ch0/UNIPHY2), which the
+		 * vendor DTS's "uniphy2_port6_*" clock names confirm is the same
+		 * wiring used here.
+		 */
+		port@6 {
+			reg = <6>;
+			phy-mode = "usxgmii";
+			managed = "in-band-status";
+			label = "wan";
+			phy-handle = <&phy4>;
+			pcs-handle = <&pcs2_ch0>;
+			clocks = <&nsscc NSS_CC_PORT6_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT6_RX_CLK>,
+				 <&nsscc NSS_CC_PORT6_TX_CLK>;
+			clock-names = "mac",
+				      "rx",
+				      "tx";
+			resets = <&nsscc PORT6_MAC_ARES>,
+				 <&nsscc PORT6_RX_ARES>,
+				 <&nsscc PORT6_TX_ARES>;
+			reset-names = "mac",
+				      "rx",
+				      "tx";
+		};
+	};
+};
+
+&rpm_requests {
+	regulators {
+		compatible = "qcom,rpm-mp5496-regulators";
+
+		ipq9574_s1: s1 {
+			regulator-min-microvolt = <725000>;
+			regulator-max-microvolt = <1075000>;
+		};
+
+		mp5496_l2: l2 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		mp5496_l5: l5 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+	};
+};
+
+&sleep_clk {
+	clock-frequency = <32000>;
+};
+
+&pwm {
+	pinctrl-0 = <&pwm_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&sdhc_1 {
+	bus-width = <8>;
+	max-frequency = <384000000>;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
+	mmc-hs400-enhanced-strobe;
+	non-removable;
+	pinctrl-0 = <&sdc_default_state>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/*
+ * The vendor firmware also enables an on-die 2.4 GHz radio
+ * (wifi@c0000000, "qcom,cnss-qca9574"). That node/driver isn't wired up
+ * in this tree's ipq9574.dtsi/ath12k support yet, so it's left out here.
+ *
+ * pcie2 (gen3x2) carries the sole PCIe radio: a QCN9274 running dual-MAC
+ * (5 GHz + 6 GHz on one device, 0003:01:00.0). 5 GHz is working; 6 GHz
+ * needs the amss_dualmac firmware + ath12k split-phy config (WIP).
+ * pcie0 is unpopulated, pcie3 ships status=disabled in the vendor DT, and
+ * pcie1 never links even under the vendor firmware (no radio behind it) -
+ * so all three are left at their .dtsi-default disabled state.
+ */
+&pcie2_phy {
+	status = "okay";
+};
+
+&pcie2 {
+	pinctrl-0 = <&pcie2_default>;
+	pinctrl-names = "default";
+
+	perst-gpios = <&tlmm 29 GPIO_ACTIVE_LOW>;
+	status = "okay";
+
+	pcie@0,0 {
+		#address-cells = <3>;
+		#size-cells = <2>;
+		reg = <0 0 0 0 0>;
+
+		wifi2: pcie@0 {
+			compatible = "pci17cb,1109";
+			reg = <0 0 0 0 0>;
+			qcom,board_id = <0x04>;
+			/*
+			 * The QCN9274 here runs in dual-MAC mode (5 GHz +
+			 * 6 GHz on one device), but this board leaves the
+			 * OTP dual-MAC board-id bit unset (OTP board_id
+			 * reads 0x0). The vendor selects the dual-MAC
+			 * firmware via its own board config; mainline ath12k
+			 * only keys off the OTP bit, so tell the driver to
+			 * force dual-MAC firmware selection here. Without it
+			 * only MAC0/5 GHz comes up (MAC1 WMI connect -71).
+			 */
+			qcom,ath12k-force-dualmac;
+		};
+	};
+};
+
+&tlmm {
+	sdc_default_state: sdc-default-state {
+		clk-pins {
+			pins = "gpio5";
+			function = "sdc_clk";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		cmd-pins {
+			pins = "gpio4";
+			function = "sdc_cmd";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+
+		data-pins {
+			pins = "gpio0", "gpio1", "gpio2",
+			       "gpio3", "gpio6", "gpio7",
+			       "gpio8", "gpio9";
+			function = "sdc_data";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+
+		rclk-pins {
+			pins = "gpio10";
+			function = "sdc_rclk";
+			drive-strength = <8>;
+			bias-pull-down;
+		};
+	};
+
+	gpio_keys_default: gpio-keys-default-state {
+		pins = "gpio37", "gpio40";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+	};
+
+	pwm_pins: pwm-state {
+		pins = "gpio44", "gpio45", "gpio46", "gpio47";
+		function = "pwm";
+		drive-strength = <8>;
+	};
+
+	pcie2_default: pcie2-default-state {
+		perst-n-pins {
+			pins = "gpio29";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-down;
+			output-low;
+		};
+	};
+
+	/*
+	 * LAN PHY package (QCA8075) hardware reset (active-low), gpio60. Held
+	 * HIGH (out of reset) for the whole runtime via a gpio-hog so it is
+	 * driven before the MDIO bus scans for the PHYs. This is THE critical
+	 * bring-up requirement on this board: Linksys U-Boot leaves gpio60 as an
+	 * input (floating low = package held in reset), and mainline never drives
+	 * it, so without this hog the entire package is dead on MDIO (all of
+	 * addresses 0x10-0x13 read 0xffff). Confirmed live: driving gpio60 high
+	 * brings the PHYs up. A plain reset-gpios on &mdio does not work -
+	 * mainline's MDIO core pulses it low mid-registration and the chip does
+	 * not recover; a static hog avoids that entirely. (RDP433 uses
+	 * reset-gpios because its U-Boot leaves gpio60 driven; ours does not.)
+	 */
+	lan_phy_reset_hog: lan-phy-reset-hog {
+		gpio-hog;
+		gpios = <60 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "lan-phy-reset-n";
+	};
+};
+
+&mdio {
+	status = "okay";
+	clock-frequency = <6250000>;
+
+	/*
+	 * LAN: Qualcomm QCA8075 (Malibu) quad gigabit PHY package at MDIO
+	 * 0x10-0x13, connected to the SoC over UNIPHY0/PCS0 channels 0-3 in
+	 * QSGMII (PSGMII) mode - the same wiring as the IPQ9574 RDP433 reference.
+	 * The package hardware reset (gpio60) is held out of reset by the
+	 * lan_phy_reset_hog in &tlmm above; do NOT add reset-gpios here (see the
+	 * hog comment for why the mainline MDIO reset pulse does not work).
+	 */
+	ethernet-phy-package@10 {
+		compatible = "qcom,qca8075-package";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg = <0x10>;
+		qcom,package-mode = "qsgmii";
+
+		phy0: ethernet-phy@10 {
+			reg = <0x10>;
+		};
+
+		phy1: ethernet-phy@11 {
+			reg = <0x11>;
+		};
+
+		phy2: ethernet-phy@12 {
+			reg = <0x12>;
+		};
+
+		phy3: ethernet-phy@13 {
+			reg = <0x13>;
+		};
+	};
+
+	/*
+	 * WAN: discrete Qualcomm QCA8081 single-port 2.5G PHY at MDIO bus
+	 * address 0x1c, reset via gpio36 (separate from the LAN package reset).
+	 * Confirmed from hardware: U-Boot reads PHY ID 004d.d101 (= QCA8081) and
+	 * the vendor QSDK kernel registers "qca808x phydev 90000.mdio:1c".
+	 */
+	phy4: ethernet-phy@1c {
+		compatible = "ethernet-phy-id004d.d101";
+		reg = <0x1c>;
+		reset-gpios = <&tlmm 36 GPIO_ACTIVE_LOW>;
+	};
+};
+
+&usb_0_dwc3 {
+	dr_mode = "host";
+};
+
+&usb_0_qmpphy {
+	vdda-phy-supply = <&regulator_fixed_0p925>;
+
+	status = "okay";
+};
+
+&usb_0_qusbphy {
+	vdd-supply = <&regulator_fixed_0p925>;
+	vdda-phy-dpdm-supply = <&regulator_fixed_3p3>;
+
+	status = "okay";
+};
+
+&usb3 {
+	status = "okay";
+};
+
+&ref_48mhz_clk {
+	clock-div = <1>;
+	clock-mult = <1>;
+};
+
+&xo_board_clk {
+	clock-div = <2>;
+	clock-mult = <1>;
+};
+
+&xo_clk {
+	clock-frequency = <48000000>;
+};
+
+/* pcs1/port5 (lan5) is unused on this 4 LAN + 1 WAN board; pcs2/port6 (wan) stays enabled. */
+&pcs1 {
+	status = "disabled";
+};
+
+/*
+ * 2.4 GHz on-die radio: IPQ95xx internal Wi-Fi 6 (QCN5024-class) radio on the
+ * AHB bus, driven by ath11k, running on the SoC Q6 (secure PIL, &q6v5_wcss).
+ * Node data (interrupts incl. Q6 watchdog SPI 325, addresses, board_id) derived
+ * from the vendor DTB (AP-AL02-C4). WIP - see MBE7000_ATH11K_24G_BACKPORT.md.
+ */
+&q6v5_wcss {
+	status = "okay";
+};
+
+/ {
+	reserved-memory {
+		wlan_ce_mem: wlan-ce@4d800000 {
+			no-map;
+			reg = <0x0 0x4d800000 0x0 0x500000>;
+		};
+	};
+};
+
+&soc {
+	wifi: wifi@c000000 {
+		compatible = "qcom,ipq9574-wifi";
+		reg = <0xc000000 0x1000000>;
+		interrupts = <GIC_SPI 320 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 319 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 318 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 325 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 316 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 315 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 314 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 311 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 310 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 411 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 410 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 40 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 39 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 302 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 301 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 37 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 36 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 296 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 295 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 294 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 293 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 292 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 291 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 290 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 289 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 288 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 239 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 236 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 235 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 234 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 233 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 232 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 231 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 230 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 229 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 228 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 224 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 223 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 203 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 183 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 180 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 179 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 178 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 177 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 176 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 163 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 162 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 160 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 414 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 159 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 158 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 157 IRQ_TYPE_EDGE_RISING>,
+		             <GIC_SPI 156 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "misc-pulse1",
+		                  "misc-latch",
+		                  "sw-exception",
+		                  "watchdog",
+		                  "ce0",
+		                  "ce1",
+		                  "ce2",
+		                  "ce3",
+		                  "ce4",
+		                  "ce5",
+		                  "ce6",
+		                  "ce7",
+		                  "ce8",
+		                  "ce9",
+		                  "ce10",
+		                  "ce11",
+		                  "host2wbm-desc-feed",
+		                  "host2reo-re-injection",
+		                  "host2reo-command",
+		                  "host2rxdma-monitor-ring3",
+		                  "host2rxdma-monitor-ring2",
+		                  "host2rxdma-monitor-ring1",
+		                  "reo2ost-exception",
+		                  "wbm2host-rx-release",
+		                  "reo2host-status",
+		                  "reo2host-destination-ring4",
+		                  "reo2host-destination-ring3",
+		                  "reo2host-destination-ring2",
+		                  "reo2host-destination-ring1",
+		                  "rxdma2host-monitor-destination-mac3",
+		                  "rxdma2host-monitor-destination-mac2",
+		                  "rxdma2host-monitor-destination-mac1",
+		                  "ppdu-end-interrupts-mac3",
+		                  "ppdu-end-interrupts-mac2",
+		                  "ppdu-end-interrupts-mac1",
+		                  "rxdma2host-monitor-status-ring-mac3",
+		                  "rxdma2host-monitor-status-ring-mac2",
+		                  "rxdma2host-monitor-status-ring-mac1",
+		                  "host2rxdma-host-buf-ring-mac3",
+		                  "host2rxdma-host-buf-ring-mac2",
+		                  "host2rxdma-host-buf-ring-mac1",
+		                  "rxdma2host-destination-ring-mac3",
+		                  "rxdma2host-destination-ring-mac2",
+		                  "rxdma2host-destination-ring-mac1",
+		                  "host2tcl-input-ring4",
+		                  "host2tcl-input-ring3",
+		                  "host2tcl-input-ring2",
+		                  "host2tcl-input-ring1",
+		                  "wbm2host-tx-completions-ring4",
+		                  "wbm2host-tx-completions-ring3",
+		                  "wbm2host-tx-completions-ring2",
+		                  "wbm2host-tx-completions-ring1",
+		                  "tcl2host-status-ring";
+		qcom,rproc = <&q6v5_wcss>;
+		memory-region = <&q6_region>, <&wlan_ce_mem>;
+		status = "okay";
+	};
+};

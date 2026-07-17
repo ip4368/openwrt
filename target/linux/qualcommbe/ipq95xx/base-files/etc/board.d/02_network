@@ -3,8 +3,36 @@
 # Copyright (c) 2011-2015 OpenWrt.org
 #
 
+. /lib/functions.sh
 . /lib/functions/uci-defaults.sh
 . /lib/functions/system.sh
+
+# The Linksys factory base MAC is stored as "hw_mac_addr=" in the devinfo
+# eMMC partition (Linksys OUI 80:69:1A). Derive per-interface MACs from it so
+# the ethernet stops using random addresses. Offsets: lan=+0, wan=+1
+# (2.4 GHz wifi uses +2 via the ath11k caldata hotplug).
+mbe7000_base_mac()
+{
+	local part
+	part=$(find_mmc_part devinfo) || return
+	grep -a -o -m1 'hw_mac_addr=[0-9A-Fa-f:]*' "$part" 2>/dev/null |
+		cut -d= -f2 | tr 'A-F' 'a-f'
+}
+
+ipq95xx_setup_macs()
+{
+	local board="$1"
+	local base_mac
+
+	case "$board" in
+	linksys,mbe7000)
+		base_mac=$(mbe7000_base_mac)
+		[ -n "$base_mac" ] || return
+		ucidef_set_interface_macaddr "lan" "$base_mac"
+		ucidef_set_interface_macaddr "wan" "$(macaddr_add "$base_mac" 1)"
+		;;
+	esac
+}
 
 ipq95xx_setup_interfaces()
 {
@@ -17,6 +45,9 @@ ipq95xx_setup_interfaces()
 	qcom,ipq9574-ap-al02-c7)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5" "wan"
 		;;
+	linksys,mbe7000)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "wan"
+		;;
 	*)
 		echo "Unsupported hardware. Network interfaces not initialized"
 		;;
@@ -26,6 +57,7 @@ ipq95xx_setup_interfaces()
 board_config_update
 board=$(board_name)
 ipq95xx_setup_interfaces $board
+ipq95xx_setup_macs $board
 board_config_flush
 
 exit 0

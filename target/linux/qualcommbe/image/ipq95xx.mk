@@ -14,6 +14,32 @@ define Device/8devices_kiwi-dvk
 endef
 TARGET_DEVICES += 8devices_kiwi-dvk
 
+define Device/linksys_mbe7000
+	$(call Device/FitImage)
+	$(call Device/EmmcImage)
+	DEVICE_VENDOR := Linksys
+	DEVICE_MODEL := MBE7000
+	# Vendor U-Boot boots with a hardcoded `bootm ...#config@1` (config_name env),
+	# so the FIT's config node must be named exactly "config@1" or the stock
+	# bootloader aborts with "Config not available". Confirmed on a live MBE70WRT.
+	DEVICE_DTS_CONFIG := config@1
+	SOC := ipq9574
+	# The QCN9274 PCIe radio needs board-specific data (the stock qcn9274
+	# board-2.bin has no entry for this board's qmi-board-id=255). The
+	# ipq-wifi-mbe7000 package supplies a board-2.bin built from the vendor
+	# BDF + regdb, keyed to board-id 255, and overrides the generic one.
+	# Wifi also requires CONFIG_CMA=y (config-6.18) for the fw host memory.
+	DEVICE_PACKAGES := kmod-ath12k ath12k-firmware-qcn9274 ipq-wifi-linksys_mbe7000 \
+		kmod-ath11k-ahb ath11k-firmware-ipq9574-mbe7000
+	# Combined single-file factory image (kernel "hlos" + "rootfs" as named
+	# QSDK-FIT sub-images), same as 8devices_kiwi-dvk and the same structure
+	# as the MBE70WRT vendor firmware. Overrides the rootfs-only factory.bin
+	# that Device/EmmcImage sets by default. Whether the stock (secure-boot)
+	# U-Boot will accept it is unconfirmed - see MBE7000_PORTING_NOTES.md.
+	IMAGE/factory.bin := qsdk-ipq-factory-nor
+endef
+TARGET_DEVICES += linksys_mbe7000
+
 define Device/qcom_rdp433
 	$(call Device/FitImageLzma)
 	DEVICE_VENDOR := Qualcomm Technologies, Inc.
