@@ -1,0 +1,43 @@
+#!/bin/sh
+
+# ath12k (5/6 GHz) has no driver-level MAC hook like the 2.4 GHz ath11k caldata
+# path, so override the AP BSSID via the wifi-iface macaddr, derived from the
+# Linksys factory base MAC (devinfo hw_mac_addr): 5 GHz = base+3, 6 GHz = base+4.
+# (lan=+0, wan=+1, 2.4 GHz=+2 are handled by 02_network / the ath11k caldata hook.)
+
+[ "${ACTION}" = "add" ] || exit 0
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "linksys,mbe7000" ] || exit 0
+
+. /lib/functions.sh
+. /lib/functions/system.sh
+
+part="$(find_mmc_part devinfo)" || exit 0
+base="$(grep -a -o -m1 'hw_mac_addr=[0-9A-Fa-f:]*' "$part" 2>/dev/null | cut -d= -f2 | tr 'A-F' 'a-f')"
+[ -n "$base" ] || exit 0
+
+restart=""
+set_iface_mac() {
+	local cfg="$1" band="$2" off="$3" dev devband cur
+	config_get dev "$cfg" device
+	[ -n "$dev" ] || return 0
+	config_get devband "$dev" band
+	[ "$devband" = "$band" ] || return 0
+	config_get cur "$cfg" macaddr
+	[ -n "$cur" ] && return 0
+	uci -q set "wireless.${cfg}.macaddr=$(macaddr_add "$base" "$off")"
+	case " $restart " in *" $dev "*) ;; *) restart="$restart $dev" ;; esac
+}
+
+config_load wireless
+config_foreach set_iface_mac wifi-iface 5g 3
+config_foreach set_iface_mac wifi-iface 6g 4
+
+[ -n "$restart" ] && {
+	uci commit wireless
+	# recreate the affected radios so the new BSSID/MAC is applied
+	for r in $restart; do
+		ubus call network.wireless down "{\"radio\":\"$r\"}" 2>/dev/null
+		ubus call network.wireless up "{\"radio\":\"$r\"}" 2>/dev/null
+	done
+}
+exit 0
