@@ -1,0 +1,38 @@
+#!/bin/sh
+
+[ -e /lib/firmware/$FIRMWARE ] && exit 0
+
+. /lib/functions/caldata.sh
+. /lib/functions/system.sh
+
+board=$(board_name)
+
+mbe7000_base_mac() {
+	local part
+	part=$(find_mmc_part devinfo) || return
+	grep -a -o -m1 'hw_mac_addr=[0-9A-Fa-f:]*' "$part" 2>/dev/null |
+		cut -d= -f2 | tr 'A-F' 'a-f'
+}
+
+case "$FIRMWARE" in
+"ath11k/IPQ9574/hw1.0/cal-ahb-c000000.wifi.bin")
+	case "$board" in
+	linksys,mbe7000)
+		# QCN5024 (on-die 2.4 GHz) factory calibration lives in the
+		# 0:ART eMMC partition at 0x1000, 128 KiB.
+		caldata_extract_mmc "0:ART" 0x1000 0x20000
+		# Replace the Atheros default MAC in the caldata with a MAC
+		# derived from the Linksys factory base (devinfo hw_mac_addr).
+		# lan=+0, wan=+1, 2.4 GHz=+2.
+		base_mac=$(mbe7000_base_mac)
+		[ -n "$base_mac" ] && {
+			ath11k_patch_mac "$(macaddr_add "$base_mac" 2)" 0
+			ath11k_set_macflag
+		}
+		;;
+	esac
+	;;
+*)
+	exit 1
+	;;
+esac
