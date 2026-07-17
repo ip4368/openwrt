@@ -109,3 +109,33 @@ Legend: **P1** functional defect · **P3** cosmetic/log noise · **U** upstream/
   yellow/purple/cyan mixes + a "pulse" breathing trigger (not replicated).
 - **Remaining:** rebuild + flash to confirm the four `/sys/class/leds/*:status`
   nodes appear, blue lights on boot, and it flips to white (internet) / red.
+
+---
+
+## sysupgrade / dual-boot flashing — FIXED 2026-07-17 (pending on-hardware test)
+
+15. `sysupgrade` never took effect ("the partition didn't change after flashing"),
+    and forcing the written slot gave U-Boot "Config not available". **Root cause:**
+    `platform.sh` wrote a *fixed* slot (`0:HLOS`/`rootfs` = slot A, p28/p29) while
+    the device runs from slot B (p30/p31), and **never set BOOTCONFIG** — so the
+    new image landed on the non-booting slot and the boot pointer never moved.
+    (The images themselves are fine: the sysupgrade tar *does* contain the kernel —
+    `sysupgrade-tar` defaults `kernel=$(IMAGE_KERNEL)` — and the hlos FIT has
+    `config@1`, which is what the vendor U-Boot wants.)
+- **Boot mechanism (decoded from the U-Boot env):** `bootipq` runs `bootpart1`
+  (slot A: `mmc read $prikern`=p28, root p29) or `bootpart2` (slot B:
+  `$altkern`=p30, root p31), each `bootm ...#config@1`. Slot selected by the
+  BOOTCONFIG primaryboot flags (offset 128 HLOS / 148 rootfs; 0=A, 1=B) in
+  0:BOOTCONFIG (p3) + 0:BOOTCONFIG1 (p4). Reference: the vendor `flash.scr`
+  (imxtract hlos/rootfs → raw `mmc write`) and OpenWrt `ipq40xx` `sony.sh`.
+- **Fix:** rewrote `platform.sh` to be A/B-aware — detect the active slot from
+  BOOTCONFIG, write kernel+rootfs to the **inactive** slot (via `emmc_do_upgrade`,
+  which also carries config through `emmc_copy_config`), then flip BOOTCONFIG to
+  the new slot. Writing the inactive slot means the running system stays intact as
+  a fallback, so a bad flash can't brick (return to the old slot via
+  auto_recovery or a manual BOOTCONFIG edit). Aborts if the active slot can't be
+  read (never overwrites the running slot on a bad guess).
+- **Note on image choice:** flash the **sysupgrade.bin** via `sysupgrade` (the
+  A/B path). The **factory.bin** is the combined QSDK-FIT container for the
+  *vendor webui* flow — do NOT `sysupgrade` the factory.bin (it goes down the
+  `emmc_upgrade_fit` path and writes the container, not a bootable kernel).
