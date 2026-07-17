@@ -90,7 +90,7 @@ Legend: **P1** functional defect · **P3** cosmetic/log noise · **U** upstream/
 
 ---
 
-## LED — FIXED 2026-07-17 (pending on-hardware confirmation after flash)
+## LED — FIXED + VERIFIED on hardware 2026-07-17
 
 14. Front-panel RGBW status LED. **Root cause found:** the tree had `CONFIG_PWM`/
     `CONFIG_PWM_IPQ` but **not `CONFIG_LEDS_PWM`**, so the `leds-pwm` driver never
@@ -107,12 +107,13 @@ Legend: **P1** functional defect · **P3** cosmetic/log noise · **U** upstream/
   (connectivity poll) + `etc/init.d/mbe7000-ledd` (procd, board-guarded).
   Vendor also has red-dimming during a factory-reset hold and supports
   yellow/purple/cyan mixes + a "pulse" breathing trigger (not replicated).
-- **Remaining:** rebuild + flash to confirm the four `/sys/class/leds/*:status`
-  nodes appear, blue lights on boot, and it flips to white (internet) / red.
+- **Verified on hardware (2026-07-17):** the four `/sys/class/leds/*:status` nodes
+  appear, `mbe7000-ledd` runs, and with internet up the LED sits solid **white**
+  (white:status=255) — exactly the vendor scheme.
 
 ---
 
-## sysupgrade / dual-boot flashing — FIXED 2026-07-17 (pending on-hardware test)
+## sysupgrade / dual-boot flashing — FIXED + VERIFIED on hardware 2026-07-17
 
 15. `sysupgrade` never took effect ("the partition didn't change after flashing"),
     and forcing the written slot gave U-Boot "Config not available". **Root cause:**
@@ -138,4 +139,12 @@ Legend: **P1** functional defect · **P3** cosmetic/log noise · **U** upstream/
 - **Note on image choice:** flash the **sysupgrade.bin** via `sysupgrade` (the
   A/B path). The **factory.bin** is the combined QSDK-FIT container for the
   *vendor webui* flow — do NOT `sysupgrade` the factory.bin (it goes down the
-  `emmc_upgrade_fit` path and writes the container, not a bootable kernel).
+  `emmc_upgrade_fit` path and writes the container, not a bootable kernel). Also
+  do NOT `sysupgrade` the raw vendor `.img` (same reason; it needs the vendor
+  `flash.scr` mechanism).
+- **Verified on hardware (2026-07-17):** live-deployed the new platform.sh and ran
+  `sysupgrade` from slot B — it wrote slot A, flipped BOOTCONFIG, and booted the
+  new build on slot A; a second run ping-ponged A→B. Both slots end up with a
+  bootable image; the running slot is never written, so a bad flash can't brick.
+- **Helper:** `mbe7000-bootslot` (usr/bin) shows/switches the A/B slot from within
+  OpenWrt (`mbe7000-bootslot` / `mbe7000-bootslot a|b`) instead of hand-`dd`.
