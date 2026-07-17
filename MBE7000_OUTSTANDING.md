@@ -96,10 +96,16 @@ Legend: **P1** functional defect · **P3** cosmetic/log noise · **U** upstream/
     `CONFIG_PWM_IPQ` but **not `CONFIG_LEDS_PWM`**, so the `leds-pwm` driver never
     built and the `pwm-leds` DTS node produced zero `/sys/class/leds` devices.
     **Mapping + polarity CONFIRMED on hardware** by driving each PWM channel of
-    pwmchip0 directly and observing the front LED: ch0/gpio44=red, ch1/gpio45=green,
-    ch2/gpio46=blue, ch3/gpio47=white; polarity normal (100% duty = full brightness).
-- **Fix applied:** `CONFIG_LEDS_PWM=y` in config-6.18; DTS comment updated to
-  "confirmed"; white LED set `default-state = "on"` as a simple powered indicator.
+    pwmchip0 directly: ch0/gpio44=red, ch1/gpio45=green, ch2/gpio46=blue,
+    ch3/gpio47=white; polarity normal (100% duty = full brightness).
+- **Fix applied:** `CONFIG_LEDS_PWM=y`; DTS confirmed; blue `default-state="on"`.
+- **Behaviour scheme (vendor-faithful, decoded from the MBE70WRT firmware image
+  cbt_led.sh / cbt_check_internet.sh / CBT_system_ready):**
+  blue = booted/ready · **white = internet reachable** · red = no internet
+  (vendor polls connectivity ~60 s and flips white<->red). Implemented as
+  `usr/bin/mbe7000-led` (set one solid colour) + `usr/sbin/mbe7000-ledd`
+  (connectivity poll) + `etc/init.d/mbe7000-ledd` (procd, board-guarded).
+  Vendor also has red-dimming during a factory-reset hold and supports
+  yellow/purple/cyan mixes + a "pulse" breathing trigger (not replicated).
 - **Remaining:** rebuild + flash to confirm the four `/sys/class/leds/*:status`
-  nodes appear and the white LED lights on boot; optionally add activity/status
-  triggers (needs the relevant kmod-ledtrig-* if using netdev/heartbeat).
+  nodes appear, blue lights on boot, and it flips to white (internet) / red.

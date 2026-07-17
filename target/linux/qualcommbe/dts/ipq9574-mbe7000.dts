@@ -89,7 +89,8 @@
 	 * polarity normal/active-high (100% duty = full brightness). Note this
 	 * tree's ipq9574.dtsi pwm node uses #pwm-cells = <3> (channel, period,
 	 * flags), unlike the QSDK's 2-cell form. Requires CONFIG_LEDS_PWM.
-	 * white defaults on as a simple "powered" indicator; adjust via LuCI.
+	 * blue defaults on as the boot/"ready" indicator (matching the vendor);
+	 * the mbe7000-ledd service then drives white=internet-up / red=no-internet.
 	 */
 	pwm-leds {
 		compatible = "pwm-leds";
@@ -113,6 +114,7 @@
 			function = LED_FUNCTION_STATUS;
 			pwms = <&pwm 2 1250000 0>;
 			max-brightness = <255>;
+			default-state = "on";
 		};
 
 		led-white {
@@ -120,7 +122,6 @@
 			function = LED_FUNCTION_STATUS;
 			pwms = <&pwm 3 1250000 0>;
 			max-brightness = <255>;
-			default-state = "on";
 		};
 	};
 };

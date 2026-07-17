@@ -1,0 +1,33 @@
+#!/bin/sh
+# Front-panel status LED daemon for the Linksys MBE7000.
+# Reproduces the vendor scheme (cbt_check_internet.sh + CBT_system_ready):
+#   blue  = booted / ready (network up, connectivity not yet confirmed)
+#   white = internet reachable (default route + a ping target answers)
+#   red   = no internet (no default route, or all ping targets fail)
+# Polled, like the vendor firmware.
+
+LED=/usr/bin/mbe7000-led
+INTERVAL=30
+PING_TARGETS="8.8.8.8 1.1.1.1 9.9.9.9"
+
+have_internet() {
+	# need a default route first
+	ip -4 route show default 2>/dev/null | grep -q '^default' || return 1
+	local ip
+	for ip in $PING_TARGETS; do
+		ping -q -c1 -w4 "$ip" >/dev/null 2>&1 && return 0
+	done
+	return 1
+}
+
+# "ready" indication while the first connectivity check runs
+"$LED" blue
+
+while :; do
+	if have_internet; then
+		"$LED" white
+	else
+		"$LED" red
+	fi
+	sleep "$INTERVAL"
+done

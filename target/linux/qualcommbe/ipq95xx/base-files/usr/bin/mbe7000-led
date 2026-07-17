@@ -1,0 +1,28 @@
+#!/bin/sh
+# Front-panel RGBW status LED helper for the Linksys MBE7000.
+# Drives a single solid colour (all others off), matching the vendor's
+# cbt_led.sh behaviour. LED class nodes are named "<colour>:status" by the
+# pwm-leds driver (see ipq9574-mbe7000.dts); match by colour substring so we
+# are robust to the exact name format.
+#
+# Usage: mbe7000-led <red|green|blue|white|off>
+
+set_colour() {
+	local colour="$1" val="$2" d
+	for d in /sys/class/leds/*"$colour"*; do
+		[ -e "$d/brightness" ] || continue
+		echo none > "$d/trigger" 2>/dev/null
+		echo "$val" > "$d/brightness" 2>/dev/null
+	done
+}
+
+# turn every channel off first, so only one solid colour is shown
+for c in red green blue white; do
+	set_colour "$c" 0
+done
+
+case "$1" in
+	red|green|blue|white) set_colour "$1" 255 ;;
+	off) ;;
+	*) echo "usage: $0 <red|green|blue|white|off>" >&2; exit 1 ;;
+esac
