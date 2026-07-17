@@ -45,44 +45,54 @@ Legend: **P1** functional defect · **P3** cosmetic/log noise · **U** upstream/
 
 3. `wmi.c:6806` WARNING + stack trace — the reg-event parse failure from item 1;
    fires at boot and on any country change / `wifi reload`. Harmless but noisy.
-4. `ath12k … failed to flush transmit queue, data pkts pending N` — benign vdev/
-   peer teardown warning on client roam / interface reconfigure.
+4. `ath12k … failed to flush transmit queue, data pkts pending N` and
+   `ath12k … dp_tx: failed to find the peer with peer_id N` — benign ath12k
+   data-path races during peer/vdev teardown (a frame is still queued for a
+   client that just disconnected). Cosmetic log noise on client churn; not a
+   crash or service loss, not fixed by a rebuild.
 5. Boot-time `htt event 48 not handled`, `memory type 10 not supported`,
    `cal-pci …-12`, `WMI MAC1 -71` — all previously confirmed non-fatal.
    (ath11k / 2.4 GHz path shows zero errors.)
+6. `SQUASHFS error: … xz decompression failed, data probably corrupt` on /rom —
+   NOT a code bug and NOT failing eMMC (no block-layer/mmc I/O errors logged).
+   Diagnosed 2026-07-17 as corruption in the *currently flashed* rootfs image,
+   an artifact of the earlier incremental/hot-swap build_dir workflow. The
+   freshly clean-built squashfs decompresses 100% cleanly (unsquashfs: 965 files,
+   no decompression errors), so a clean flash of a from-scratch image is the fix.
+   Escalate to flash-write/eMMC only if it recurs after a clean flash.
 
 ---
 
 ## U — Upstreamability / maintainability (not broken, matters before a PR)
 
-6. `qcom,ath12k-force-dualmac` is a downstream DT prop + driver patch
+7. `qcom,ath12k-force-dualmac` is a downstream DT prop + driver patch
    (`705-ath12k-force-dualmac-from-dt.patch`), not in upstream ath12k.
-7. ath11k IPQ9574 (`600-ath11k-support-ipq9574.patch`) + secure-PIL Q6
+8. ath11k IPQ9574 (`600-ath11k-support-ipq9574.patch`) + secure-PIL Q6
    (`0366`–`0368`) are backports of not-yet-merged upstream series — expect churn
    as they land.
-8. `board-2.bin` uses a hand-forged `qmi-board-id=255`; PR #20373 (BE800) reads
+9. `board-2.bin` uses a hand-forged `qmi-board-id=255`; PR #20373 (BE800) reads
    `qcom,board_id` from DT via a small patch — the cleaner convention to adopt.
-9. The dev-notes `.md` files (`MBE7000_PORTING_NOTES.md`,
+10. The dev-notes `.md` files (`MBE7000_PORTING_NOTES.md`,
    `MBE7000_ATH11K_24G_BACKPORT.md`, this file) should be dropped from an upstream
    PR.
-10. 2.4 GHz runs ath11k FW memory mode 0 → ~128 MB CMA reservation (heavy but
+11. 2.4 GHz runs ath11k FW memory mode 0 → ~128 MB CMA reservation (heavy but
     fine; unused CMA is reclaimable, so low real cost).
 
 ---
 
 ## ? — Unconfirmed
 
-11. 5/6 GHz per-unit calibration: ath12k relies on `board-2.bin` BDF, not per-unit
+12. 5/6 GHz per-unit calibration: ath12k relies on `board-2.bin` BDF, not per-unit
     ART caldata (`cal-pci …` load fails, non-fatal). RF cal may be generic, not
     per-unit. Confirm whether per-unit cal exists / matters for this board.
-12. Whether the stock secure-boot U-Boot accepts our `factory.bin` directly — only
+13. Whether the stock secure-boot U-Boot accepts our `factory.bin` directly — only
     flashed via the vendor webui so far.
 
 ---
 
 ## LED — FIXED 2026-07-17 (pending on-hardware confirmation after flash)
 
-13. Front-panel RGBW status LED. **Root cause found:** the tree had `CONFIG_PWM`/
+14. Front-panel RGBW status LED. **Root cause found:** the tree had `CONFIG_PWM`/
     `CONFIG_PWM_IPQ` but **not `CONFIG_LEDS_PWM`**, so the `leds-pwm` driver never
     built and the `pwm-leds` DTS node produced zero `/sys/class/leds` devices.
     **Mapping + polarity CONFIRMED on hardware** by driving each PWM channel of
