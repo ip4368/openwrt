@@ -83,12 +83,13 @@
 
 	/*
 	 * Front-panel RGBW status LED, driven by the SoC PWM block (4 channels
-	 * at gpio44-47). Channel/pin/colour mapping taken from the MBE70WRT
-	 * vendor DT (red=ch0/gpio44, green=ch1/gpio45, blue=ch2/gpio46,
-	 * white=ch3/gpio47; period 1250000 ns). Note this tree's ipq9574.dtsi
-	 * pwm node uses #pwm-cells = <3> (channel, period, flags), unlike the
-	 * QSDK's 2-cell form. Polarity assumed normal (active-high); flip to
-	 * PWM_POLARITY_INVERTED if the LED turns out common-anode on hardware.
+	 * at gpio44-47). Channel/pin/colour mapping and polarity CONFIRMED on
+	 * hardware by driving each PWM channel directly: red=ch0/gpio44,
+	 * green=ch1/gpio45, blue=ch2/gpio46, white=ch3/gpio47; period 1250000 ns;
+	 * polarity normal/active-high (100% duty = full brightness). Note this
+	 * tree's ipq9574.dtsi pwm node uses #pwm-cells = <3> (channel, period,
+	 * flags), unlike the QSDK's 2-cell form. Requires CONFIG_LEDS_PWM.
+	 * white defaults on as a simple "powered" indicator; adjust via LuCI.
 	 */
 	pwm-leds {
 		compatible = "pwm-leds";
@@ -119,6 +120,7 @@
 			function = LED_FUNCTION_STATUS;
 			pwms = <&pwm 3 1250000 0>;
 			max-brightness = <255>;
+			default-state = "on";
 		};
 	};
 };
