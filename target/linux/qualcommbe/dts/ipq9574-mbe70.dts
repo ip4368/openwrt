@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+/*
+ * Linksys MBE70 (Velop Pro 7 "WRT"/developer variant).
+ *
+ * Hardware-identical to the retail MBE7000, so the full board description is
+ * shared from ipq9574-mbe7000.dts; only the identity differs. The two SKUs ship
+ * different stock bootloaders: the MBE70's `bootipq` boots a BARE FIT kernel,
+ * while the retail MBE7000's `bootipq` expects a Qualcomm ELF/MBN-wrapped kernel.
+ * They therefore build as separate targets with distinct compatibles so each
+ * image only sysupgrades onto its matching unit. See MBE7000_FLASHING_PLAN.md.
+ */
+
+#include "ipq9574-mbe7000.dts"
+
+/ {
+	model = "Linksys MBE70";
+	compatible = "linksys,mbe70", "qcom,ipq9574";
+};

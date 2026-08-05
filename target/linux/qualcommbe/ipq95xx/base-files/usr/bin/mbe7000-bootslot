@@ -13,10 +13,11 @@
 
 . /lib/functions.sh
 
-[ "$(board_name)" = "linksys,mbe7000" ] || {
-	echo "${0##*/}: only supported on linksys,mbe7000" >&2
-	exit 1
-}
+case "$(board_name)" in
+linksys,mbe70|linksys,mbe7000) ;;
+*)	echo "${0##*/}: only supported on linksys,mbe70/linksys,mbe7000" >&2
+	exit 1 ;;
+esac
 
 bc1=$(find_mmc_part "0:BOOTCONFIG")
 bc2=$(find_mmc_part "0:BOOTCONFIG1")

@@ -6,7 +6,7 @@ USE_PROCD=1
 
 start_service() {
 	# board-guard: no-op on other qualcommbe/ipq95xx devices
-	[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "linksys,mbe7000" ] || return 0
+	case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in linksys,mbe70|linksys,mbe7000) ;; *) return 0 ;; esac
 
 	procd_open_instance
 	procd_set_param command /usr/sbin/mbe7000-ledd

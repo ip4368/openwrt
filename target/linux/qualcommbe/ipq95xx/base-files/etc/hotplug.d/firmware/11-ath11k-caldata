@@ -17,7 +17,7 @@ mbe7000_base_mac() {
 case "$FIRMWARE" in
 "ath11k/IPQ9574/hw1.0/cal-ahb-c000000.wifi.bin")
 	case "$board" in
-	linksys,mbe7000)
+	linksys,mbe70|linksys,mbe7000)
 		# QCN5024 (on-die 2.4 GHz) factory calibration lives in the
 		# 0:ART eMMC partition at 0x1000, 128 KiB.
 		caldata_extract_mmc "0:ART" 0x1000 0x20000

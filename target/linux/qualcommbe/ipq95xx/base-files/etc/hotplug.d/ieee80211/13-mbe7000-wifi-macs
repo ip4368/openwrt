@@ -6,7 +6,7 @@
 # (lan=+0, wan=+1, 2.4 GHz=+2 are handled by 02_network / the ath11k caldata hook.)
 
 [ "${ACTION}" = "add" ] || exit 0
-[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "linksys,mbe7000" ] || exit 0
+case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in linksys,mbe70|linksys,mbe7000) ;; *) exit 0 ;; esac
 
 . /lib/functions.sh
 . /lib/functions/system.sh

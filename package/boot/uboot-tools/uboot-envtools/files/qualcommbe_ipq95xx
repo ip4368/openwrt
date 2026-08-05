@@ -11,7 +11,7 @@ case "$board" in
 8devices,kiwi-dvk)
 	ubootenv_add_mmc "0:APPSBLENV" "" "0x0" "0x40000" "0x40000"
 	;;
-linksys,mbe7000)
+linksys,mbe70|linksys,mbe7000)
 	# U-Boot text env lives in the 'u_env' eMMC partition, offset 0, 256 KiB,
 	# single copy - identical to the stock firmware's /etc/fw_env.config
 	# (/dev/mmcblk0p21 0x0 0x40000). Holds boot_part / auto_recovery /

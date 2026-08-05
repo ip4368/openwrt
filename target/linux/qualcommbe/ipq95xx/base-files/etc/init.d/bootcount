@@ -21,7 +21,7 @@ START=99
 
 boot() {
 	case "$(board_name)" in
-	linksys,mbe7000)
+	linksys,mbe70|linksys,mbe7000)
 		reset_linksys_emmc_bootcount
 		;;
 	esac

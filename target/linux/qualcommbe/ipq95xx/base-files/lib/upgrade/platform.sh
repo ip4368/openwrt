@@ -52,7 +52,7 @@ platform_do_upgrade() {
 		CI_ROOTPART="rootfs"
 		emmc_do_upgrade "$1"
 		;;
-	linksys,mbe7000)
+	linksys,mbe70|linksys,mbe7000)
 		local active target
 		active=$(mbe7000_boot_slot)
 		# always write the slot we are NOT running from
@@ -74,7 +74,7 @@ platform_do_upgrade() {
 
 platform_copy_config() {
 	case "$(board_name)" in
-	8devices,kiwi-dvk|linksys,mbe7000)
+	8devices,kiwi-dvk|linksys,mbe70|linksys,mbe7000)
 		emmc_copy_config
 		;;
 	esac

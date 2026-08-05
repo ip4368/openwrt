@@ -25,7 +25,7 @@ ipq95xx_setup_macs()
 	local base_mac
 
 	case "$board" in
-	linksys,mbe7000)
+	linksys,mbe70|linksys,mbe7000)
 		base_mac=$(mbe7000_base_mac)
 		[ -n "$base_mac" ] || return
 		ucidef_set_interface_macaddr "lan" "$base_mac"
@@ -45,7 +45,7 @@ ipq95xx_setup_interfaces()
 	qcom,ipq9574-ap-al02-c7)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5" "wan"
 		;;
-	linksys,mbe7000)
+	linksys,mbe70|linksys,mbe7000)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "wan"
 		;;
 	*)
