@@ -1490,12 +1490,48 @@ Recreate this file (scratchpad is session-specific and gets cleaned up):
 
 ```bash
 #!/bin/bash
-# Build the MBE7000 OpenWrt image inside the mbe7000-build-img container.
+# Build the MBE7000/MBE70 OpenWrt image inside the mbe7000-build-img container.
 # The image already has all OpenWrt build-depends + a builder user (uid 1000).
 set -o pipefail
+cd /openwrt || exit 1
+# Remove host-built binaries linked against the host's newer glibc (they fail in
+# the container) so they get rebuilt in-container: kconfig conf/mconf AND the
+# host apk tool if it was ever rebuilt natively (see 2026-08-05 gotcha below).
+rm -f  scripts/config/conf scripts/config/mconf scripts/config/*.o
+rm -rf staging_dir/host/bin/apk staging_dir/host/stamp/.apk_installed \
+       build_dir/hostpkg/apk-3.0.5
+# python3 host symlink must resolve inside the container (ubuntu 22.04:
+# /usr/bin/python3 -> 3.10); repoint in case it dangles on the host.
+[ -e staging_dir/host/bin ] && ln -sf /usr/bin/python3 staging_dir/host/bin/python3
 su builder -c "cd /openwrt && make -j16 IGNORE_ERRORS=1" 2>&1
 echo "=== MAKE EXIT: $? ==="
 ```
+
+### GOTCHA (2026-08-05): dangling `python3` symlink after a host Python upgrade
+
+`staging_dir/host/bin/python3` was a symlink to `/usr/bin/python3.10`. After the
+Manjaro host upgraded system Python to 3.14, that symlink dangles, and ANY native
+host-tool build that needs Python (meson -> the host `apk` tool) fails with
+`.../python3: No such file or directory`. Symptoms cascade: `make
+package/base-files/compile` and `make package/install` fail, so base-files never
+rebuild and the rootfs stays stale even though `make target/linux/install`
+"succeeds" (it only rebuilt the DTB + repackaged the OLD rootfs). Do NOT try to
+fix this by rebuilding host tools natively - the host glibc is too new and it also
+contaminates `staging_dir/host` with binaries the ubuntu:22.04 container can't run
+(`GLIBC_2.38 not found`). Just build in Docker; `docker-build.sh` above now
+repoints the symlink and removes any natively-built `apk`/kconfig binaries so the
+container rebuilds them. (This is the same class of issue as the kconfig `conf`
+GLIBC mismatch already documented.)
+
+### GOTCHA: editing target base-files needs a rootfs reassembly, not just images
+
+`make target/linux/install` rebuilds the DTB + repackages images but does NOT
+reinstall the `base-files` package into the rootfs, and OpenWrt rebuilds packages
+by version, not by `target/linux/.../base-files/` file mtimes. So after editing
+e.g. `base-files/etc/board.d/02_network`, a plain `make target/linux/install`
+ships the OLD scripts. A full `make world` (what `docker-build.sh` runs)
+reassembles the rootfs and picks them up. Verify with:
+`grep linksys,mbe70 build_dir/target-*/root-*/etc/board.d/02_network`.
 
 ### GOTCHA: changing .config (e.g. adding packages) needs defconfig on the HOST
 
