@@ -1,0 +1,73 @@
+# MBE70 U-Boot Environment Dump
+
+Dumped from live MBE70 running OpenWrt (`root@OpenWrt:~# fw_printenv`).
+Date: 2026-07-18
+
+**IDENTICAL to MBE7000 env except `ethaddr`.**
+
+```
+altkern=0x0010ea22
+auto_recovery=yes
+baudrate=115200
+boot_part=2
+boot_part_ready=3
+boot_ver=7.0.25
+bootargs=console=ttyMSM0,115200n8
+bootcmd=bootipq
+bootdelay=3
+bootpart1=setenv bootargs $partbootargs && mmc read $loadaddr $prikern $kernsize && bootm $loadaddr#$config_name
+bootpart2=setenv bootargs $partbootargs2 && mmc read $loadaddr $altkern $kernsize && bootm $loadaddr#$config_name
+config_name=config@1
+dload_dis=1
+ethaddr=80:69:1A:B2:C1:08
+fdt_high=0x48500000
+fdtcontroladdr=4a4f4004
+flash_type=5
+flashimg=tftp $loadaddr $image && mmc erase $prikern $imgsize && mmc write $loadaddr $prikern $fileblkcount
+flashimg2=tftp $loadaddr $image && mmc erase $altkern $imgsize && mmc write $loadaddr $altkern $fileblkcount
+image=MBE70.img
+imgsize=0x000FE000
+ipaddr=192.168.1.1
+kernsize=0x00004000
+loadaddr=4D100000
+machid=8050301
+netmask=255.255.255.0
+partbootargs=init=/sbin/init root=/dev/mmcblk0p29 ro rootfstype=squashfs rootwait
+partbootargs2=init=/sbin/init root=/dev/mmcblk0p31 ro rootfstype=squashfs rootwait
+prikern=0x00010a22
+serverip=192.168.1.254
+soc_version_major=1
+soc_version_minor=1
+stderr=serial@78B1000
+stdin=serial@78B1000
+stdout=serial@78B1000
+```
+
+## Comparison: MBE70 vs MBE7000
+
+| Variable | MBE70 | MBE7000 | Different? |
+|----------|-------|---------|------------|
+| ethaddr | 80:69:1A:B2:C1:08 | 00:03:7f:ba:db:ad | YES (per-device) |
+| Everything else | — | — | NO (identical) |
+
+**Conclusion:** The U-Boot env is shared/same across both MBE70 and MBE7000.
+The `bootipq` command and all env vars are identical. The only per-device
+value is `ethaddr` (MAC address).
+
+## Critical Implication for Recovery
+
+The stock env is already 100% correct. To recover the bricked MBE7000,
+we only need to restore `bootcmd=bootipq`. Nothing else needs changing.
+
+For OpenWrt boot on MBE7000 (which has phdr-based `bootipq`):
+```
+fw_setenv bootcmd 'run bootpart1'
+```
+
+For OpenWrt boot on MBE70 (which has direct `bootipq`):
+```
+fw_setenv bootcmd 'run bootpart1'
+```
+
+Both devices: `bootcmd='run bootpart1'` works. The `bootpart1` env var
+contains the same direct `mmc read` + `bootm` command on both.

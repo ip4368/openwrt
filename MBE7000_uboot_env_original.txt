@@ -1,0 +1,35 @@
+altkern=0x0010ea22
+auto_recovery=yes
+baudrate=115200
+boot_part=2
+boot_part_ready=3
+boot_ver=7.0.25
+bootargs=console=ttyMSM0,115200n8
+bootcmd=bootipq
+bootdelay=3
+bootpart1=setenv bootargs $partbootargs && mmc read $loadaddr $prikern $kernsize && bootm $loadaddr#$config_name
+bootpart2=setenv bootargs $partbootargs2 && mmc read $loadaddr $altkern $kernsize && bootm $loadaddr#$config_name
+config_name=config@1
+dload_dis=1
+ethaddr=00:03:7f:ba:db:ad
+fdt_high=0x48500000
+fdtcontroladdr=4a4f4004
+flash_type=5
+flashimg=tftp $loadaddr $image && mmc erase $prikern $imgsize && mmc write $loadaddr $prikern $fileblkcount
+flashimg2=tftp $loadaddr $image && mmc erase $altkern $imgsize && mmc write $loadaddr $altkern $fileblkcount
+image=MBE70.img
+imgsize=0x000FE000
+ipaddr=192.168.1.1
+kernsize=0x00004000
+loadaddr=4D100000
+machid=8050301
+netmask=255.255.255.0
+partbootargs=init=/sbin/init root=/dev/mmcblk0p29 ro rootfstype=squashfs rootwait
+partbootargs2=init=/sbin/init root=/dev/mmcblk0p31 ro rootfstype=squashfs rootwait
+prikern=0x00010a22
+serverip=192.168.1.254
+soc_version_major=1
+soc_version_minor=1
+stderr=serial@78B1000
+stdin=serial@78B1000
+stdout=serial@78B1000
