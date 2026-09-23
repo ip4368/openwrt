@@ -1,0 +1,11 @@
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ] || exit 0
+[ "$INTERFACE" = "wwan" ] || [ "$INTERFACE" = "wan" ] || exit 0
+# pbr only processes policies while its uplink is up; the travel upstream
+# roams between wan and wwan, so keep the uplink pointed at it.
+. /usr/lib/travelwizard/common.sh
+UP=$(tw_upstream 2>/dev/null) || exit 0
+[ "$UP" = "$(uci -q get pbr.config.uplink_interface)" ] && exit 0
+uci set pbr.config.uplink_interface="$UP"
+uci commit pbr
+/etc/init.d/pbr reload >/dev/null 2>&1 &
+exit 0

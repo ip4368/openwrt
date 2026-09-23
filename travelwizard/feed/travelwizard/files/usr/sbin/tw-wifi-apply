@@ -1,0 +1,47 @@
+#!/bin/sh
+# Apply Wi-Fi names/passwords from travelwizard UCI to all local AP ifaces.
+# Matches AP sections by their network (lan -> mgmt, vault -> vault) so it
+# works on every radio. Prints JSON.
+# Usage: tw-wifi-apply
+. /usr/share/libubox/jshn.sh
+
+MGMT_SSID=$(uci -q get travelwizard.main.mgmt_ssid)
+VAULT_SSID=$(uci -q get travelwizard.main.vault_ssid)
+MGMT_KEY=$(uci -q get travelwizard.main.mgmt_key)
+VAULT_KEY=$(uci -q get travelwizard.main.vault_key)
+
+valid_ssid() { [ -n "$1" ] && [ "${#1}" -ge 1 ] && [ "${#1}" -le 32 ]; }
+valid_key() { [ "${#1}" -ge 8 ] && [ "${#1}" -le 63 ]; }
+
+valid_ssid "$MGMT_SSID" || { echo '{"error":"bad setup-network name (1-32 chars)"}'; exit 1; }
+valid_ssid "$VAULT_SSID" || { echo '{"error":"bad private-network name (1-32 chars)"}'; exit 1; }
+valid_key "$MGMT_KEY" || { echo '{"error":"setup-network password must be 8-63 chars"}'; exit 1; }
+valid_key "$VAULT_KEY" || { echo '{"error":"private-network password must be 8-63 chars"}'; exit 1; }
+[ "$MGMT_SSID" != "$VAULT_SSID" ] || { echo '{"error":"the two network names must differ"}'; exit 1; }
+
+N=0
+for s in $(uci show wireless 2>/dev/null | sed -n 's/^wireless\.\([^.]*\)=wifi-iface/\1/p'); do
+	mode=$(uci -q get wireless."$s".mode)
+	[ "$mode" = "ap" ] || continue
+	net=$(uci -q get wireless."$s".network)
+	if [ "$net" = "lan" ]; then
+		uci set wireless."$s".ssid="$MGMT_SSID"
+		uci set wireless."$s".key="$MGMT_KEY"
+		N=$((N + 1))
+	elif [ "$net" = "vault" ]; then
+		uci set wireless."$s".ssid="$VAULT_SSID"
+		uci set wireless."$s".key="$VAULT_KEY"
+		N=$((N + 1))
+	fi
+done
+[ "$N" -gt 0 ] || { echo '{"error":"no local AP interfaces found"}'; exit 1; }
+
+uci commit wireless
+wifi reload >/dev/null 2>&1
+
+json_init
+json_add_boolean applied 1
+json_add_int updated "$N"
+json_add_string mgmt_ssid "$MGMT_SSID"
+json_add_string vault_ssid "$VAULT_SSID"
+json_dump

@@ -1,0 +1,85 @@
+#!/bin/sh
+# Detect upstream/LAN subnet overlap and re-address our LANs when needed.
+# Hotel Wi-Fi often sits on 192.168.x.x, which breaks routing when it matches
+# our own LAN. Prints JSON describing what changed.
+# Usage: tw-subnet-fix
+. /usr/share/libubox/jshn.sh
+. /usr/lib/travelwizard/common.sh
+
+UPSTREAM=$(tw_upstream)
+[ -z "$UPSTREAM" ] && { echo '{"changed":false,"reason":"no upstream link"}'; exit 0; }
+
+# shellcheck disable=SC2086
+set -- $(tw_ipv4 "$UPSTREAM")
+WAN_IP="$1"; WAN_MASK="$2"
+[ -z "$WAN_IP" ] && { echo '{"changed":false,"reason":"no upstream IPv4"}'; exit 0; }
+
+# Candidate /24 pools. Avoid the subnets hotels most commonly use
+# (.0, .1, .10, .68, .88, .100) so a second clash is unlikely.
+LAN_POOL="40 51 62 73 84 95 126 137"
+VAULT_POOL="30 31 32"
+
+lan_ip=$(uci -q get network.lan.ipaddr); lan_ip=${lan_ip:-192.168.40.1}
+vault_ip=$(uci -q get network.vault.ipaddr); vault_ip=${vault_ip:-10.20.30.1}
+
+pick_free() { # base $1: "192.168" or "10.20", pool $2, other net $3 $4
+	local base octet
+	for octet in $2; do
+		cand="$1.$octet.1"
+		if nets_overlap "$WAN_IP" "$WAN_MASK" "$cand" 24; then continue; fi
+		if [ -n "$3" ] && nets_overlap "$3" "$4" "$cand" 24; then continue; fi
+		echo "$cand"
+		return 0
+	done
+	return 1
+}
+
+CHANGED="false"
+OLD_LAN="$lan_ip"; OLD_VAULT="$vault_ip"
+
+if nets_overlap "$WAN_IP" "$WAN_MASK" "$lan_ip" 24; then
+	NEW_LAN=$(pick_free "192.168" "$LAN_POOL" "$vault_ip" 24) \
+		|| { echo '{"changed":false,"error":"no free LAN subnet"}'; exit 1; }
+	uci set network.lan.ipaddr="$NEW_LAN"
+	uci set network.lan.netmask='255.255.255.0'
+	uci set travelwizard.main.lan_net="$NEW_LAN/24"
+	lan_ip="$NEW_LAN"
+	CHANGED="true"
+fi
+
+if nets_overlap "$WAN_IP" "$WAN_MASK" "$vault_ip" 24 \
+	|| nets_overlap "$lan_ip" 24 "$vault_ip" 24; then
+	NEW_VAULT=$(pick_free "10.20" "$VAULT_POOL" "$lan_ip" 24) \
+		|| { echo '{"changed":false,"error":"no free vault subnet"}'; exit 1; }
+	uci set network.vault.ipaddr="$NEW_VAULT"
+	uci set network.vault.netmask='255.255.255.0'
+	uci set travelwizard.main.vault_net="$NEW_VAULT/24"
+	vault_ip="$NEW_VAULT"
+	CHANGED="true"
+fi
+
+if [ "$CHANGED" = "true" ]; then
+	uci commit network
+	uci commit travelwizard
+	# The vault policy route matches by source subnet; a stale one would
+	# leave the renumbered vault with no route into the tunnel.
+	PBR_CHANGED=""
+	tw_pbr_set_vault_net "${vault_ip%.*}.0/24" && { uci commit pbr; PBR_CHANGED=1; }
+	# Restart networking so DHCP/DNS/firewall pick up the new subnets.
+	/etc/init.d/network restart >/dev/null 2>&1
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	/etc/init.d/firewall restart >/dev/null 2>&1
+	[ -n "$PBR_CHANGED" ] && /etc/init.d/pbr restart >/dev/null 2>&1
+fi
+
+json_init
+[ "$CHANGED" = "true" ] && json_add_boolean changed 1 || json_add_boolean changed 0
+json_add_string upstream "$UPSTREAM"
+json_add_string upstream_ip "$WAN_IP/$WAN_MASK"
+json_add_string lan "$lan_ip/24"
+json_add_string vault "$vault_ip/24"
+[ "$CHANGED" = "true" ] && {
+	json_add_string old_lan "$OLD_LAN/24"
+	json_add_string old_vault "$OLD_VAULT/24"
+}
+json_dump

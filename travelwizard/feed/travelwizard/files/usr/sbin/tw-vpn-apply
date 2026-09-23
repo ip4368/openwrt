@@ -1,0 +1,209 @@
+#!/bin/sh
+# Apply the VPN/proxy mode from /etc/config/travelwizard: rewrite the
+# per-mode network/service config, point policy routing (pbr) at the tunnel
+# for the vault subnet only, and restart services. Prints JSON.
+# Usage: tw-vpn-apply
+. /usr/share/libubox/jshn.sh
+. /usr/lib/travelwizard/common.sh
+
+MODE=$(tw_active_mode)
+# Resolve the settings section: active profile, or the legacy per-mode section.
+SRC=$(uci -q get travelwizard.main.active_profile)
+if [ -z "$SRC" ] || [ -z "$(uci -q get travelwizard.$SRC.type 2>/dev/null)" ]; then
+	case "$MODE" in
+		wireguard) SRC="wg" ;;
+		openvpn) SRC="ovpn" ;;
+		singbox) SRC="sb" ;;
+		*) SRC="" ;;
+	esac
+fi
+VAULT_IP=$(uci -q get network.vault.ipaddr); VAULT_IP=${VAULT_IP:-10.20.30.1}
+VAULT_NET="${VAULT_IP%.*}.0/24"
+SB_CONF=""; OVPN_CONF=""
+if [ -n "$SRC" ]; then
+	SB_CONF=$(uci -q get "travelwizard.$SRC.config_file" 2>/dev/null)
+	OVPN_CONF="$SB_CONF"
+fi
+SB_CONF="${SB_CONF:-/etc/sing-box/config.json}"
+OVPN_CONF="${OVPN_CONF:-/etc/openvpn/tw.conf}"
+
+fail() { echo "{\"error\":\"$1\"}"; exit 1; }
+
+# --- stop everything first ----------------------------------------------
+uci -q delete network.tw_wg
+uci -q delete network.tw_wg_peer
+uci set network.vpntun='interface'
+uci set network.vpntun.proto='none'
+uci set network.vpntun.auto='0'
+uci -q delete openvpn.tw
+uci set openvpn.tw='openvpn'
+uci set openvpn.tw.enabled='0'
+uci set openvpn.tw.config="$OVPN_CONF"
+uci commit network
+uci commit openvpn
+# NOTE: the init script spawns no instances unless sing-box.main.enabled=1,
+# so init-disable alone does not stop it; park the uci flag too.
+if [ -n "$(uci -q get sing-box.main.enabled 2>/dev/null)" ]; then
+	uci set sing-box.main.enabled='0'
+	uci commit sing-box
+fi
+/etc/init.d/sing-box stop >/dev/null 2>&1
+/etc/init.d/sing-box disable >/dev/null 2>&1
+/etc/init.d/openvpn stop >/dev/null 2>&1
+
+# --- per-mode setup ------------------------------------------------------
+VPN_IF=""
+VAULT_DNS=""
+case "$MODE" in
+	off) VPN_IF="" ;;
+	wireguard)
+		command -v wg >/dev/null 2>&1 || fail "wireguard-tools not installed"
+		PRIV=$(uci -q get "travelwizard.$SRC.private_key")
+		PUB=$(uci -q get "travelwizard.$SRC.peer_public_key")
+		EP=$(uci -q get "travelwizard.$SRC.endpoint_host")
+		[ -z "$PRIV" ] || [ -z "$PUB" ] || [ -z "$EP" ] \
+			&& fail "incomplete WireGuard settings"
+		uci set network.tw_wg='interface'
+		uci set network.tw_wg.proto='wireguard'
+		uci set network.tw_wg.private_key="$PRIV"
+		uci -q delete network.tw_wg.addresses
+		for a in $(uci -q get "travelwizard.$SRC.addresses"); do
+			uci add_list network.tw_wg.addresses="$a"
+		done
+		# NOTE: the profile's DNS goes to vault clients (below), not to
+		# network.tw_wg.dns: that would feed the router's own resolver,
+		# whose queries bypass pbr and go out the direct upstream.
+		VAULT_DNS=$(uci -q get "travelwizard.$SRC.dns")
+		uci set network.tw_wg_peer='wireguard_tw_wg'
+		uci set network.tw_wg_peer.public_key="$PUB"
+		uci set network.tw_wg_peer.endpoint_host="$EP"
+		uci set network.tw_wg_peer.endpoint_port="$(uci -q get "travelwizard.$SRC.endpoint_port")"
+		uci -q delete network.tw_wg_peer.allowed_ips
+		for a in $(uci -q get "travelwizard.$SRC.allowed_ips"); do
+			uci add_list network.tw_wg_peer.allowed_ips="$a"
+		done
+		[ -n "$(uci -q get "travelwizard.$SRC.preshared_key")" ] && \
+			uci set network.tw_wg_peer.preshared_key="$(uci -q get "travelwizard.$SRC.preshared_key")"
+		uci set network.tw_wg_peer.persistent_keepalive='25'
+		uci set network.tw_wg_peer.route_allowed_ips='0' # pbr routes instead
+		VPN_IF="tw_wg"
+		;;
+	openvpn)
+		command -v openvpn >/dev/null 2>&1 || fail "openvpn not installed"
+		[ -s "$OVPN_CONF" ] || fail "no OpenVPN config uploaded"
+		# Managed block: fixed tun name + no pulled routes (pbr routes).
+		sed -i '/^# tw-managed$/,/^# \/tw-managed$/d' "$OVPN_CONF"
+		{
+			echo "# tw-managed"
+			echo "dev tun_tw"
+			echo "dev-type tun"
+			echo "route-nopull"
+			USER=$(uci -q get "travelwizard.$SRC.username")
+			if [ -n "$USER" ]; then
+				printf '%s\n%s\n' "$USER" "$(uci -q get "travelwizard.$SRC.password")" \
+					> /etc/openvpn/tw.auth
+				chmod 600 /etc/openvpn/tw.auth
+				echo "auth-user-pass /etc/openvpn/tw.auth"
+			fi
+			echo "# /tw-managed"
+		} >>"$OVPN_CONF"
+		uci set openvpn.tw.enabled='1'
+		uci set network.vpntun.device='tun_tw'
+		uci set network.vpntun.auto='1'
+		VPN_IF="vpntun"
+		;;
+	singbox)
+		command -v sing-box >/dev/null 2>&1 || fail "sing-box not installed"
+		[ -s "$SB_CONF" ] || fail "no proxy config imported yet"
+		grep -q '"type"[[:space:]]*:[[:space:]]*"tun"' "$SB_CONF" \
+			|| fail "profile config has no TUN inbound (re-import the subscription)"
+		sing-box check -c "$SB_CONF" >/dev/null 2>&1 \
+			|| fail "proxy config failed sing-box check"
+		uci -q show sing-box.main >/dev/null 2>&1 \
+			|| fail "sing-box service config missing"
+		cp "$SB_CONF" /etc/sing-box/config.json
+		chmod 600 /etc/sing-box/config.json
+		uci set network.vpntun.device='tun0'
+		uci set network.vpntun.auto='1'
+		uci set sing-box.main.enabled='1'
+		# TUN mode needs privilege (per the init script's own note).
+		uci set sing-box.main.user='root'
+		uci commit sing-box
+		/etc/init.d/sing-box enable >/dev/null 2>&1
+		/etc/init.d/sing-box restart >/dev/null 2>&1
+		n=0
+		while ! ip link show tun0 >/dev/null 2>&1 && [ "$n" -lt 10 ]; do
+			sleep 1; n=$((n + 1))
+		done
+		ip link show tun0 >/dev/null 2>&1 \
+			|| fail "sing-box started but tun0 is missing (see logread for errors)"
+		VPN_IF="vpntun"
+		;;
+	*) fail "unknown vpn mode: $MODE" ;;
+esac
+
+uci commit network
+uci commit openvpn
+
+# --- vault DNS: public resolvers through the tunnel, never the router ------
+[ -n "$(tw_dhcp_dns_option "$VAULT_DNS")" ] \
+	|| VAULT_DNS=$(uci -q get travelwizard.main.vault_dns)
+DNS_CHANGED=""
+tw_set_vault_dns "$VAULT_DNS" && { uci commit dhcp; DNS_CHANGED=1; }
+
+# --- policy routing: vault subnet -> VPN only -----------------------------
+# pbr (policy-based routing) watches the tunnel and routes the vault SSID
+# subnet through it. When the tunnel is down there is no route, and the
+# firewall's vault->wan REJECT rule is the second layer: vault clients get
+# VPN or nothing. The mgmt LAN is untouched (always direct).
+if uci -q show pbr >/dev/null 2>&1; then
+	# NOTE: keep the values unquoted: `uci set` stores argv literally,
+	# so inner quotes become part of the value (and bool parsing breaks).
+	SEC=""; DUPES=""
+	for s in $(uci show pbr 2>/dev/null | sed -n 's/^pbr\.\([^.]*\)=policy/\1/p'); do
+		pname=$(uci -q get pbr."$s".name)
+		pname=${pname#"'"}
+		pname=${pname%"'"}
+		[ "$pname" = "vault-via-vpn" ] || continue
+		# Prepend: delete highest index first, so lower indices don't shift.
+		if [ -z "$SEC" ]; then SEC="$s"; else DUPES="$s $DUPES"; fi
+	done
+	for s in $DUPES; do uci -q delete pbr."$s"; done
+	[ -z "$SEC" ] && SEC=$(uci add pbr policy)
+	uci set pbr."$SEC".name="vault-via-vpn"
+	uci set pbr."$SEC".src_addr="$VAULT_NET"
+	if [ -n "$VPN_IF" ]; then
+		uci set pbr."$SEC".interface="$VPN_IF"
+		uci set pbr."$SEC".enabled="1"
+	else
+		uci set pbr."$SEC".enabled="0"
+	fi
+	uci set pbr.config.enabled="1"
+	uci set pbr.config.strict_enforcement="1"
+	# pbr sits in boot mode until its uplink is up; the travel upstream
+	# roams between wan and wwan, so follow it (hotplug keeps it fresh).
+	UP_IF=$(tw_upstream 2>/dev/null)
+	[ -n "$UP_IF" ] && uci set pbr.config.uplink_interface="$UP_IF"
+	uci commit pbr
+	/etc/init.d/pbr restart >/dev/null 2>&1
+	PBR="true"
+else
+	PBR="false"
+fi
+
+/etc/init.d/network reload >/dev/null 2>&1
+[ "$MODE" = "openvpn" ] && /etc/init.d/openvpn restart >/dev/null 2>&1
+/etc/init.d/firewall reload >/dev/null 2>&1
+[ -n "$DNS_CHANGED" ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1
+
+json_init
+json_add_string mode "$MODE"
+[ -n "$SRC" ] && json_add_string profile "$(uci -q get "travelwizard.$SRC.name" 2>/dev/null)"
+json_add_boolean applied 1
+json_add_string vpn_interface "$VPN_IF"
+json_add_string vault_net "$VAULT_NET"
+json_add_string vault_dns "$(uci -q get dhcp.vault.dhcp_option)"
+[ "$PBR" = "true" ] && json_add_boolean pbr 1 || json_add_boolean pbr 0
+[ "$PBR" != "true" ] && json_add_string warning "pbr not installed: vault routing inactive until pbr is installed"
+tw_kill_holding && json_add_boolean kill_holding 1 || json_add_boolean kill_holding 0
+json_dump

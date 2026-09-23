@@ -1,0 +1,174 @@
+#!/bin/sh
+# First-boot defaults for the travel-router: dual SSIDs, vault policy zone
+# with a VPN-or-nothing kill switch. Idempotent via marker file.
+[ -e /etc/travelwizard.initialized ] && exit 0
+
+. /lib/functions.sh
+. /usr/lib/travelwizard/common.sh
+
+MGMT_SSID=$(uci -q get travelwizard.main.mgmt_ssid); MGMT_SSID=${MGMT_SSID:-Travel-Setup}
+VAULT_SSID=$(uci -q get travelwizard.main.vault_ssid); VAULT_SSID=${VAULT_SSID:-Travel-Vault}
+MGMT_KEY=$(uci -q get travelwizard.main.mgmt_key); MGMT_KEY=${MGMT_KEY:-travel-setup-please-change}
+VAULT_KEY=$(uci -q get travelwizard.main.vault_key); VAULT_KEY=${VAULT_KEY:-travel-vault-please-change}
+LAN_IP=$(uci -q get travelwizard.main.lan_net); LAN_IP=${LAN_IP%%/*}; LAN_IP=${LAN_IP:-192.168.40.1}
+VAULT_IP=$(uci -q get travelwizard.main.vault_net); VAULT_IP=${VAULT_IP%%/*}; VAULT_IP=${VAULT_IP:-10.20.30.1}
+
+# --- network: vault + wwan client -----------------------------------------
+# Vault is a bridge over both radios' APs: a bare interface only carries
+# the first AP, leaving the second without an address (and without DHCP).
+uci -q delete network.vault
+uci set network.vault='interface'
+uci set network.vault.proto='static'
+uci set network.vault.ipaddr="$VAULT_IP"
+uci set network.vault.netmask='255.255.255.0'
+brsec=$(uci add network device)
+uci set network."$brsec".name='br-vault'
+uci set network."$brsec".type='bridge'
+uci set network.vault.device='br-vault'
+
+uci -q delete network.vpntun
+uci set network.vpntun='interface'
+uci set network.vpntun.proto='none'
+uci set network.vpntun.auto='0'
+
+# Keep stock wan (ethernet) as-is; wwan is our Wi-Fi-as-WAN client.
+uci -q delete network.wwan
+uci set network.wwan='interface'
+uci set network.wwan.proto='dhcp'
+uci set network.wwan.metric='10' # prefer ethernet wan when both are up
+
+# Move the default LAN off the congested 192.168.1.x so most hotel clashes
+# never happen in the first place.
+uci set network.lan.ipaddr="$LAN_IP"
+uci set network.lan.netmask='255.255.255.0'
+
+# --- wireless: mgmt AP + vault AP on every radio, sta on the first --------
+# Both SSIDs on both bands so 2.4-only clients still get VPN. The sta iface
+# shares the first radio; that radio follows the upstream channel.
+FIRST_RADIO=""
+for radio in $(uci show wireless 2>/dev/null \
+	| sed -n 's/^wireless\.\([^.]*\)=wifi-device/\1/p'); do
+	[ -z "$FIRST_RADIO" ] && FIRST_RADIO="$radio"
+	uci set wireless."$radio".disabled='0'
+
+	uci -q delete "wireless.mgmt_$radio"
+	uci set "wireless.mgmt_$radio"='wifi-iface'
+	uci set "wireless.mgmt_$radio".device="$radio"
+	uci set "wireless.mgmt_$radio".mode='ap'
+	uci set "wireless.mgmt_$radio".network='lan'
+	uci set "wireless.mgmt_$radio".ssid="$MGMT_SSID"
+	uci set "wireless.mgmt_$radio".encryption='sae-mixed'
+	uci set "wireless.mgmt_$radio".key="$MGMT_KEY"
+
+	uci -q delete "wireless.vault_$radio"
+	uci set "wireless.vault_$radio"='wifi-iface'
+	uci set "wireless.vault_$radio".device="$radio"
+	uci set "wireless.vault_$radio".mode='ap'
+	uci set "wireless.vault_$radio".network='vault'
+	uci set "wireless.vault_$radio".ssid="$VAULT_SSID"
+	uci set "wireless.vault_$radio".encryption='sae-mixed'
+	uci set "wireless.vault_$radio".key="$VAULT_KEY"
+done
+
+# Remove stock default AP if present (avoid a third open SSID).
+uci -q delete wireless.default_radio0
+uci -q delete wireless.default_radio1
+
+if [ -n "$FIRST_RADIO" ]; then
+	uci -q delete wireless.wwan
+	uci set wireless.wwan='wifi-iface'
+	uci set wireless.wwan.device="$FIRST_RADIO"
+	uci set wireless.wwan.mode='sta'
+	uci set wireless.wwan.network='wwan'
+	uci set wireless.wwan.ssid='__unset__'
+	uci set wireless.wwan.encryption='none'
+	uci set wireless.wwan.disabled='1' # enabled by tw-wan-join
+fi
+
+# --- dhcp for the vault ----------------------------------------------------
+uci -q delete dhcp.vault
+uci set dhcp.vault='dhcp'
+uci set dhcp.vault.interface='vault'
+uci set dhcp.vault.start='100'
+uci set dhcp.vault.limit='150'
+uci set dhcp.vault.leasetime='12h'
+uci set dhcp.vault.dhcpv4='server' # explicit: v4 only, no v6 RA/DHCPv6
+# Vault clients get public resolvers, not the router: dnsmasq resolves over
+# the direct upstream, which would leak vault lookups around the tunnel.
+tw_set_vault_dns "$(uci -q get travelwizard.main.vault_dns)"
+
+# --- firewall: vault may only leave through the vpn zone -------------------
+# Zone for tunnel interfaces. tw-vpn-apply just starts/stops tunnels; the
+# zone statically matches all of them.
+if ! uci show firewall 2>/dev/null | grep -q "firewall.@zone.*name='vpn'"; then
+	sec=$(uci add firewall zone)
+	uci set firewall."$sec".name='vpn'
+	uci set firewall."$sec".input='REJECT'
+	uci set firewall."$sec".output='ACCEPT'
+	uci set firewall."$sec".forward='REJECT'
+	uci set firewall."$sec".masq='1'
+	uci set firewall."$sec".mtu_fix='1'
+	uci add_list firewall."$sec".network='tw_wg'
+	uci add_list firewall."$sec".device='tun_tw'
+	uci add_list firewall."$sec".device='tun0'
+fi
+
+if ! uci show firewall 2>/dev/null | grep -q "firewall.@zone.*name='vault'"; then
+	sec=$(uci add firewall zone)
+	uci set firewall."$sec".name='vault'
+	uci set firewall."$sec".input='REJECT'
+	uci set firewall."$sec".output='ACCEPT'
+	uci set firewall."$sec".forward='REJECT'
+	# Without this, fw4 generates no dispatcher jumps for the zone and
+	# all vault traffic (DHCP, DNS, VPN forward) falls to default drop.
+	uci add_list firewall."$sec".network='vault'
+fi
+
+# vault -> vpn: allowed. vault -> wan: rejected (the kill switch).
+has_fwd() { # src dest
+	uci show firewall 2>/dev/null | grep -q "=forwarding" || return 1
+	for s in $(uci show firewall | sed -n 's/^firewall\.\([^.]*\)=forwarding/\1/p'); do
+		fsrc=$(uci -q get firewall."$s".src)
+		fdst=$(uci -q get firewall."$s".dest)
+		[ "$fsrc" = "$1" ] && [ "$fdst" = "$2" ] && return 0
+	done
+	return 1
+}
+has_fwd vault vpn || {
+	sec=$(uci add firewall forwarding)
+	uci set firewall."$sec".src='vault'
+	uci set firewall."$sec".dest='vpn'
+}
+# NOTE: firewall4 forwardings only allow; traffic without a forwarding hits
+# the destination zone's default policy. There is deliberately NO
+# vault->wan forwarding: with wan forward=REJECT (pinned below), vault
+# clients can only leave via the vpn zone. Combined with pbr routing the
+# vault subnet into the tunnel, this is the kill switch: VPN or nothing.
+for s in $(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.]*\)=zone/\1/p'); do
+	zname=$(uci -q get firewall."$s".name)
+	[ "$zname" = "wan" ] && {
+		uci set firewall."$s".forward='REJECT'
+		uci set firewall."$s".input='REJECT'
+		# The Wi-Fi-as-WAN client must be in the wan zone, otherwise its
+		# traffic is neither forwarded nor masqueraded.
+		uci add_list firewall."$s".network='wwan'
+	}
+done
+
+# Allow only DHCP from vault clients to the router itself. DNS to the router
+# stays rejected (zone input policy): vault lookups go to the public
+# resolvers from DHCP option 6, through the tunnel.
+sec=$(uci add firewall rule)
+uci set firewall."$sec".name='Allow vault DHCP'
+uci set firewall."$sec".src='vault'
+uci set firewall."$sec".proto='udp'
+uci set firewall."$sec".dest_port='67'
+uci set firewall."$sec".target='ACCEPT'
+
+uci commit network
+uci commit wireless
+uci commit dhcp
+uci commit firewall
+
+touch /etc/travelwizard.initialized
+exit 0

@@ -1,0 +1,65 @@
+#!/bin/sh
+# Test whether the upstream link has real internet or a captive portal.
+# Same idea as Android's connectivity check: a plain-HTTP 204 probe should
+# come back untouched. Prints JSON.
+# Usage: tw-captive-check
+. /usr/share/libubox/jshn.sh
+. /usr/lib/travelwizard/common.sh
+
+UPSTREAM=$(tw_upstream)
+[ -z "$UPSTREAM" ] && { echo '{"state":"offline","reason":"no upstream link"}'; exit 0; }
+DEV=$(tw_l3dev "$UPSTREAM")
+
+STATE="offline"
+LOGIN_URL=""
+DETAIL=""
+
+# $1 url, $2 expected-body (optional)
+probe() {
+	local hdr code loc body rc
+	hdr=$(curl -s -D - -o "$TMP_BODY" --max-time 8 \
+		${DEV:+--interface "$DEV"} "$1" 2>/dev/null)
+	rc=$?
+	[ $rc -ne 0 ] && return 1
+	code=$(printf '%s\n' "$hdr" | head -n 1 | awk '{print $2}')
+	loc=$(printf '%s\n' "$hdr" | grep -i '^location:' | head -n 1 \
+		| tr -d '\r' | sed 's/^[Ll]ocation: *//')
+	case "$code" in
+		204) return 0 ;; # genuine internet
+		200)
+			if [ -n "$2" ] && grep -q "$2" "$TMP_BODY" 2>/dev/null; then
+				return 0
+			fi
+			# 200 without the magic payload = portal page served inline.
+			STATE="captive"; LOGIN_URL="$1"
+			DETAIL="portal page served inline ($1)"
+			return 2
+			;;
+		30*)
+			STATE="captive"
+			LOGIN_URL="${loc:-$1}"
+			DETAIL="redirect to $LOGIN_URL"
+			return 2
+			;;
+		*) return 1 ;;
+	esac
+}
+
+TMP_BODY=$(mktemp)
+trap 'rm -f "$TMP_BODY"' EXIT
+
+probe "http://connectivitycheck.gstatic.com/generate_204" && STATE="online"
+if [ "$STATE" = "offline" ]; then
+	probe "http://captive.apple.com/hotspot-detect.html" "Success" && STATE="online"
+fi
+if [ "$STATE" = "offline" ]; then
+	probe "http://www.msftconnecttest.com/connecttest.txt" "Microsoft Connect Test" \
+		&& STATE="online"
+fi
+
+json_init
+json_add_string state "$STATE"
+json_add_string upstream "$UPSTREAM"
+[ -n "$LOGIN_URL" ] && json_add_string login_url "$LOGIN_URL"
+[ -n "$DETAIL" ] && json_add_string detail "$DETAIL"
+json_dump

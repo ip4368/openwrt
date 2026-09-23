@@ -1,0 +1,81 @@
+#!/bin/sh
+# Join an upstream Wi-Fi network as a wireless client (WISP/sta).
+# Usage: tw-wan-join '<ssid>' '[key]' '[band]' '[enc-hint]' '[bssid]'
+# band: 2g | 5g (places the sta iface on the matching radio).
+# enc-hint: scan encryption string (picks the right WPA mode).
+# Runs subnet-conflict fix + captive-portal check and prints combined JSON.
+. /usr/share/libubox/jshn.sh
+. /usr/lib/travelwizard/common.sh
+
+SSID="$1"
+KEY="$2"
+BAND="$3"
+ENCHINT="$4"
+BSSID="$5"
+[ -z "$SSID" ] && { echo '{"error":"missing ssid"}'; exit 1; }
+
+# Place the sta iface on the radio matching the target band. The APs on that
+# radio follow the upstream channel; the other radio stays put.
+pick_radio() {
+	local r b
+	for r in $(uci show wireless 2>/dev/null \
+		| sed -n 's/^wireless\.\([^.]*\)=wifi-device/\1/p'); do
+		b=$(uci -q get "wireless.$r.band")
+		[ "$b" = "$1" ] && { echo "$r"; return 0; }
+	done
+	return 1
+}
+RADIO=""
+[ -n "$BAND" ] && RADIO=$(pick_radio "$BAND")
+[ -z "$RADIO" ] && RADIO=$(uci show wireless 2>/dev/null \
+	| sed -n 's/^wireless\.\([^.]*\)=wifi-device/\1/p' | head -n 1)
+[ -z "$RADIO" ] && { echo '{"error":"no wireless device found"}'; exit 1; }
+
+uci -q delete wireless.wwan
+uci set wireless.wwan='wifi-iface'
+uci set wireless.wwan.device="$RADIO"
+uci set wireless.wwan.mode='sta'
+uci set wireless.wwan.network='wwan'
+uci set wireless.wwan.ssid="$SSID"
+if [ -z "$KEY" ]; then
+	case "$ENCHINT" in
+		""|none|NONE|unknown|UNKNOWN) ENC="none" ;;
+		*) echo '{"error":"this network needs a password"}'; exit 1 ;;
+	esac
+	uci -q delete wireless.wwan.key
+else
+	ENC=$(tw_uci_encryption "$ENCHINT")
+	[ "$ENC" = "eap" ] && { echo '{"error":"enterprise (802.1x) Wi-Fi is not supported"}'; exit 1; }
+	[ "$ENC" = "none" ] && ENC="sae-mixed"
+	uci set wireless.wwan.key="$KEY"
+fi
+uci set wireless.wwan.encryption="$ENC"
+[ -n "$BSSID" ] && uci set wireless.wwan.bssid="$BSSID"
+uci set wireless.wwan.disabled='0'
+uci commit wireless
+wifi reload "$RADIO" >/dev/null 2>&1
+
+# Wait for the upstream link (association + DHCP).
+LINKED="false"
+i=0
+while [ $i -lt 30 ]; do
+	up=$(ubus call network.interface.wwan status 2>/dev/null \
+		| jsonfilter -e '@.up' 2>/dev/null)
+	[ "$up" = "true" ] && { LINKED="true"; break; }
+	sleep 1
+	i=$((i + 1))
+done
+
+if [ "$LINKED" != "true" ]; then
+	echo '{"linked":false,"error":"could not connect (wrong password or out of range)"}'
+	exit 1
+fi
+
+SUBNET_JSON=$(/usr/sbin/tw-subnet-fix 2>/dev/null)
+[ -z "$SUBNET_JSON" ] && SUBNET_JSON='{"changed":false}'
+CAPTIVE_JSON=$(/usr/sbin/tw-captive-check 2>/dev/null)
+[ -z "$CAPTIVE_JSON" ] && CAPTIVE_JSON='{"state":"unknown"}'
+
+SSID_JSON=$(printf '%s' "$SSID" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')
+printf '{"linked":true,"ssid":%s,"radio":"%s","subnet":%s,"internet":%s}\n' \
+	"$SSID_JSON" "$RADIO" "$SUBNET_JSON" "$CAPTIVE_JSON"

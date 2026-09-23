@@ -1,0 +1,78 @@
+#!/bin/sh
+# Get or set the preferred upstream network (wifi | ethernet | auto).
+# The choice is enforced with route metrics (auto prefers ethernet); the
+# other link stays up as a fallback. Prints JSON.
+# Usage: tw-upstream [wifi|ethernet|auto]
+. /usr/share/libubox/jshn.sh
+. /usr/lib/travelwizard/common.sh
+
+MODE="$1"
+CHOICE=$(uci -q get travelwizard.main.upstream); CHOICE=${CHOICE:-auto}
+
+jstr() {
+	if [ -z "$1" ]; then printf 'null'; else
+		printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+	fi
+}
+bool() {
+	if [ "$1" = "true" ] || [ "$1" = "1" ]; then printf 'true'; else printf 'false'; fi
+}
+
+if [ -n "$MODE" ]; then
+	case "$MODE" in wifi|ethernet|auto) ;; *)
+		echo '{"error":"bad mode (wifi|ethernet|auto)"}'; exit 1 ;;
+	esac
+	case "$MODE" in
+		auto) uci -q delete network.wan.metric; uci set network.wwan.metric='10' ;;
+		wifi) uci set network.wwan.metric='5'; uci set network.wan.metric='20' ;;
+		ethernet) uci set network.wan.metric='5'; uci set network.wwan.metric='20' ;;
+	esac
+	uci set travelwizard.main.upstream="$MODE"
+	uci commit network
+	uci commit travelwizard
+	/etc/init.d/network reload >/dev/null 2>&1
+	sleep 3
+	CHOICE="$MODE"
+	SUBNET_JSON=$(/usr/sbin/tw-subnet-fix 2>/dev/null)
+	[ -z "$SUBNET_JSON" ] && SUBNET_JSON='null'
+	CAPTIVE_JSON=$(/usr/sbin/tw-captive-check 2>/dev/null)
+	[ -z "$CAPTIVE_JSON" ] && CAPTIVE_JSON='null'
+else
+	SUBNET_JSON='null'; CAPTIVE_JSON='null'
+fi
+
+# Wi-Fi side.
+WIFI_UP="false"; WIFI_SSID=""; WIFI_SIG=""; WIFI_IP=""
+if [ "$(ubus call network.interface.wwan status 2>/dev/null \
+		| jsonfilter -e '@.up' 2>/dev/null)" = "true" ]; then
+	WIFI_UP="true"
+	STA_DEV=$(tw_l3dev wwan)
+	WIFI_SSID=$(iwinfo "$STA_DEV" info 2>/dev/null \
+		| sed -n 's/^.*ESSID: "\(.*\)".*$/\1/p')
+	WIFI_SIG=$(iwinfo "$STA_DEV" info 2>/dev/null \
+		| sed -n 's/^.*Signal: \(-[0-9]*\).*$/\1/p')
+	# shellcheck disable=SC2086
+	set -- $(tw_ipv4 wwan); WIFI_IP="$1"
+fi
+
+# Wired side. Carrier tells "cable plugged" apart from "has IP".
+WAN_DEV=$(tw_l3dev wan)
+[ -z "$WAN_DEV" ] && WAN_DEV=$(uci -q get network.wan.device)
+CARRIER=""
+if [ -n "$WAN_DEV" ] && [ -f "/sys/class/net/$WAN_DEV/carrier" ]; then
+	CARRIER=$(cat "/sys/class/net/$WAN_DEV/carrier" 2>/dev/null)
+fi
+WIRED_UP="false"; WIRED_IP=""
+if [ "$(ubus call network.interface.wan status 2>/dev/null \
+		| jsonfilter -e '@.up' 2>/dev/null)" = "true" ]; then
+	WIRED_UP="true"
+	# shellcheck disable=SC2086
+	set -- $(tw_ipv4 wan); WIRED_IP="$1"
+fi
+ACTIVE=$(tw_upstream)
+
+printf '{"choice":%s,"active":%s,"wifi":{"up":%s,"ssid":%s,"signal":%s,"ip":%s},"wired":{"device":%s,"carrier":%s,"up":%s,"ip":%s},"subnet":%s,"internet":%s}\n' \
+	"$(jstr "$CHOICE")" "$(jstr "$ACTIVE")" \
+	"$(bool "$WIFI_UP")" "$(jstr "$WIFI_SSID")" "$(jstr "$WIFI_SIG")" "$(jstr "$WIFI_IP")" \
+	"$(jstr "$WAN_DEV")" "$(bool "$CARRIER")" "$(bool "$WIRED_UP")" "$(jstr "$WIRED_IP")" \
+	"$SUBNET_JSON" "$CAPTIVE_JSON"

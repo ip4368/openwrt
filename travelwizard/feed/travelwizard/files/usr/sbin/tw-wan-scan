@@ -1,0 +1,79 @@
+#!/bin/sh
+# Scan nearby Wi-Fi networks and report current upstream state as JSON.
+# Usage: tw-wan-scan
+. /usr/share/libubox/jshn.sh
+. /usr/lib/travelwizard/common.sh
+
+# Scan one interface per radio (2.4 GHz sees different networks than 5 GHz)
+# and merge the results, strongest first.
+SCAN_IFS=$(tw_scan_ifs)
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+: >"$TMP/nets"
+
+for SCAN_IF in $SCAN_IFS; do
+	iwinfo "$SCAN_IF" scan 2>/dev/null | awk '
+		function emit() {
+			if (bssid != "") {
+				if (essid == "" || essid == "unknown") essid = "(hidden) " bssid;
+				printf "%d|%s|%s|%s|%s\n", sig, essid, bssid, chan, enc;
+			}
+		}
+		/^Cell/ { emit(); bssid=$5; essid=""; sig=-999; chan=""; enc="none"; next; }
+		/ESSID:/ {
+			line=$0; sub(/^[^"]*"/, "", line); sub(/".*$/, "", line);
+			if ($2 == "unknown") essid=""; else essid=line;
+			next;
+		}
+		/Signal:/ { sig=$2; next; }
+		/^[ \t]+Mode:.*Channel:/ {
+			for (i = 1; i < NF; i++) if ($i == "Channel:") chan = $(i+1);
+			next;
+		}
+		/Encryption:/ { line=$0; sub(/^.*Encryption: /, "", line); enc=line; next; }
+		END { emit(); }
+	' >>"$TMP/nets"
+done
+sort -t'|' -k1,1rn "$TMP/nets" | awk -F'|' '!seen[$2]++' >"$TMP/merged"
+
+# Current upstream state.
+UPSTREAM=$(tw_upstream)
+CUR_SSID=""; CUR_SIG=""; CUR_UP="false"
+if [ -n "$UPSTREAM" ]; then
+	CUR_UP="true"
+	STA_DEV=$(tw_l3dev "$UPSTREAM")
+	if [ -n "$STA_DEV" ]; then
+		CUR_SSID=$(iwinfo "$STA_DEV" info 2>/dev/null | sed -n 's/^.*ESSID: "\(.*\)".*$/\1/p')
+		CUR_SIG=$(iwinfo "$STA_DEV" info 2>/dev/null | sed -n 's/^.*Signal: \(-[0-9]*\).*$/\1/p')
+	fi
+fi
+
+json_init
+json_add_string scan_if "$SCAN_IFS"
+json_add_array networks
+if [ -s "$TMP/merged" ]; then
+	while IFS='|' read -r sig essid bssid chan enc; do
+		json_add_object
+		json_add_string ssid "$essid"
+		json_add_string bssid "$bssid"
+		json_add_string channel "$chan"
+		json_add_string band "$(tw_band_of_channel "$chan")"
+		json_add_int signal "$sig"
+		json_add_string encryption "$enc"
+		case "$enc" in
+			none|NONE|unknown|UNKNOWN) json_add_boolean secured 0 ;;
+			*) json_add_boolean secured 1 ;;
+		esac
+		json_close_object
+	done <"$TMP/merged"
+fi
+json_close_array
+json_add_object current
+[ "$CUR_UP" = "true" ] && json_add_boolean up 1 || json_add_boolean up 0
+json_add_string upstream "$UPSTREAM"
+json_add_string ssid "$CUR_SSID"
+json_add_string signal "$CUR_SIG"
+json_add_string saved "$(uci -q get wireless.wwan.ssid)"
+json_close_object
+json_dump

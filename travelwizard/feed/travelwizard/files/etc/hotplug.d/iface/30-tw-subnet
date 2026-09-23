@@ -1,0 +1,6 @@
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$INTERFACE" = "wwan" ] || [ "$INTERFACE" = "wan" ] || exit 0
+# Re-check subnet overlap whenever an upstream comes up (roaming between
+# hotels), then leave the link alone.
+/usr/sbin/tw-subnet-fix >/dev/null 2>&1 &
+exit 0

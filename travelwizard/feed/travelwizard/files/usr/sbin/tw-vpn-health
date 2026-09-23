@@ -1,0 +1,118 @@
+#!/bin/sh
+# Check VPN/proxy health: tunnel state plus an egress-leak comparison.
+# Vault clients must egress from the VPN; if vault and direct egress share
+# the same public IP, traffic is leaking around the tunnel. Prints JSON.
+# Usage: tw-vpn-health
+. /usr/share/libubox/jshn.sh
+. /usr/lib/travelwizard/common.sh
+
+MODE=$(tw_active_mode)
+UPSTREAM=$(tw_upstream)
+WAN_DEV=$(tw_l3dev "$UPSTREAM")
+
+TUN_UP="false"
+TUN_DETAIL=""
+WG_IF="tw_wg"
+
+case "$MODE" in
+	wireguard)
+		if ip link show "$WG_IF" >/dev/null 2>&1; then
+			HS=$(wg show "$WG_IF" latest-handshakes 2>/dev/null | awk '{print $2}' | head -n 1)
+			NOW=$(date +%s)
+			if [ -n "$HS" ] && [ "$HS" -gt 0 ] && [ $((NOW - HS)) -lt 300 ]; then
+				TUN_UP="true"; TUN_DETAIL="handshake $((NOW - HS))s ago"
+			else
+				TUN_DETAIL="no recent handshake"
+			fi
+		else
+			TUN_DETAIL="interface $WG_IF missing"
+		fi
+		VPN_DEV="$WG_IF"
+		;;
+	openvpn)
+		if pgrep -f "openvpn.*tw.conf" >/dev/null 2>&1 \
+			&& ip link show tun_tw >/dev/null 2>&1; then
+			TUN_UP="true"; TUN_DETAIL="process + tun_tw up"
+		else
+			TUN_DETAIL="openvpn not running"
+		fi
+		VPN_DEV="tun_tw"
+		;;
+	singbox)
+		# NOTE: plain pgrep, not -x: busybox pgrep -x never matches here.
+		if ! pgrep sing-box >/dev/null 2>&1; then
+			TUN_DETAIL="sing-box not running"
+		elif ! ip link show tun0 >/dev/null 2>&1; then
+			TUN_DETAIL="sing-box up but tun0 missing"
+		else
+			TUN_UP="true"; TUN_DETAIL="sing-box + tun0 up"
+		fi
+		VPN_DEV="tun0"
+		;;
+	*) TUN_DETAIL="vpn disabled"; VPN_DEV="" ;;
+esac
+
+# Egress IPs. Direct goes out the raw upstream device. The VPN egress is a
+# true end-to-end probe: pin one ipify address into the tunnel device and
+# read back which public IP it exits from. (Sourcing from the vault subnet
+# does NOT work: pbr only marks the forward path, so router-local packets
+# always fail open to the main table.)
+DIRECT_IP=$(curl -s --max-time 8 ${WAN_DEV:+--interface "$WAN_DEV"} \
+	https://api.ipify.org 2>/dev/null)
+VPN_IP=""
+TW_PROBE_DST=""
+cleanup_probe() {
+	[ -n "$TW_PROBE_DST" ] && [ -n "$VPN_DEV" ] \
+		&& ip route del "$TW_PROBE_DST/32" dev "$VPN_DEV" 2>/dev/null
+	TW_PROBE_DST=""
+}
+trap cleanup_probe EXIT
+if [ "$MODE" != "off" ] && [ "$TUN_UP" = "true" ] && [ -n "$VPN_DEV" ]; then
+	TW_PROBE_DST=$(tw_resolve_ipv4 api.ipify.org)
+	if [ -n "$TW_PROBE_DST" ] \
+		&& ip route add "$TW_PROBE_DST/32" dev "$VPN_DEV" 2>/dev/null; then
+		VPN_IP=$(curl -s --max-time 10 \
+			--resolve "api.ipify.org:443:$TW_PROBE_DST" \
+			https://api.ipify.org 2>/dev/null)
+		cleanup_probe
+	fi
+fi
+
+KILL_HOLD="false"
+tw_kill_holding && KILL_HOLD="true"
+LEAK="false"
+if [ "$TUN_UP" = "true" ]; then
+	[ -n "$DIRECT_IP" ] && [ "$DIRECT_IP" = "$VPN_IP" ] && LEAK="true"
+elif [ "$MODE" != "off" ] && [ "$KILL_HOLD" != "true" ]; then
+	# Tunnel down: router-local probes always fail open to the main
+	# table, so judge the kill-switch by the firewall instead.
+	LEAK="true"
+fi
+
+if [ "$MODE" = "off" ]; then
+	VERDICT="disabled"
+elif [ "$TUN_UP" != "true" ]; then
+	if [ "$KILL_HOLD" = "true" ]; then
+		VERDICT="down"
+		TUN_DETAIL="$TUN_DETAIL, vault blocked (kill-switch holding)"
+	else
+		VERDICT="leaking"
+	fi
+elif [ -z "$VPN_IP" ]; then
+	VERDICT="no-egress"
+elif [ "$LEAK" = "true" ]; then
+	VERDICT="leaking"
+else
+	VERDICT="healthy"
+fi
+
+json_init
+json_add_string mode "$MODE"
+[ "$TUN_UP" = "true" ] && json_add_boolean tunnel_up 1 || json_add_boolean tunnel_up 0
+json_add_string tunnel_detail "$TUN_DETAIL"
+json_add_string direct_ip "$DIRECT_IP"
+json_add_string vault_ip "$VPN_IP"
+[ "$LEAK" = "true" ] && json_add_boolean leak 1 || json_add_boolean leak 0
+[ "$KILL_HOLD" = "true" ] && json_add_boolean kill_holding 1 || json_add_boolean kill_holding 0
+json_add_string verdict "$VERDICT"
+json_dump

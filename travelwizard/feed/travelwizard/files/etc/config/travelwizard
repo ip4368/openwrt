@@ -1,0 +1,41 @@
+config main 'main'
+	# SSID clients use for setup/management. Direct (non-VPN) access.
+	option mgmt_ssid 'Travel-Setup'
+	option mgmt_key 'travel-setup-please-change'
+	# SSID whose traffic must always go through the VPN/proxy, or nowhere.
+	option vault_ssid 'Travel-Vault'
+	option vault_key 'travel-vault-please-change'
+	# LAN (mgmt + wired) and vault IPv4 gateways. tw-subnet-fix rewrites
+	# these when the upstream network overlaps.
+	option lan_net '192.168.40.1/24'
+	option vault_net '10.20.30.1/24'
+	# DNS servers handed to vault clients. Queries are forwarded through the
+	# tunnel like any other vault traffic; a WireGuard profile's own DNS
+	# takes precedence while it is active.
+	option vault_dns '1.1.1.1 9.9.9.9'
+	# Active VPN mode: off | wireguard | openvpn | singbox
+	option vpn_mode 'off'
+	# Preferred upstream: auto (ethernet first) | wifi | ethernet
+	option upstream 'auto'
+
+config wireguard 'wg'
+	option private_key ''
+	option addresses ''
+	option dns ''
+	option peer_public_key ''
+	option preshared_key ''
+	option endpoint_host ''
+	option endpoint_port ''
+	option allowed_ips '0.0.0.0/0'
+	option persistent_keepalive '25'
+
+config openvpn 'ovpn'
+	option config_file '/etc/openvpn/tw.conf'
+	option username ''
+	option password ''
+
+config proxy 'sb'
+	# Subscription URL (http/https) or a single proxy link. Consumed by
+	# tw-sub-import to generate the sing-box config below.
+	option sub_url ''
+	option config_file '/etc/sing-box/config.json'

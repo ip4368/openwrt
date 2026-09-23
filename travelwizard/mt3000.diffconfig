@@ -1,0 +1,46 @@
+# TravelWizard diffconfig for GL.iNet GL-MT3000 (Beryl AX).
+# Usage (on a Linux build host, from this tree):
+#   ./scripts/feeds update -a && ./scripts/feeds install -a
+#   cp travelwizard-mt3000.diffconfig .config
+#   make defconfig && make -j$(nproc)
+# Output: bin/targets/mediatek/filogic/*glinet_gl-mt3000*-sysupgrade.bin
+CONFIG_TARGET_mediatek=y
+CONFIG_TARGET_mediatek_filogic=y
+CONFIG_TARGET_mediatek_filogic_DEVICE_glinet_gl-mt3000=y
+
+# Base UI (wizard lives inside LuCI auth; full LuCI stays as "Advanced").
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_uhttpd=y
+
+# Our packages (in package/travelwizard, package/luci-app-travelwizard).
+CONFIG_PACKAGE_travelwizard=y
+CONFIG_PACKAGE_luci-app-travelwizard=y
+
+# Wi-Fi client+AP (WISP). wpad-basic-mbedtls covers WPA2/WPA3-SAE STA+AP.
+CONFIG_PACKAGE_wpad-basic-mbedtls=y
+# CONFIG_PACKAGE_wpad-mini is not set
+CONFIG_PACKAGE_iwinfo=y
+
+# VPN backends.
+CONFIG_PACKAGE_wireguard-tools=y
+CONFIG_PACKAGE_luci-proto-wireguard=y
+CONFIG_PACKAGE_openvpn-openssl=y
+CONFIG_PACKAGE_openvpn=y
+CONFIG_PACKAGE_luci-app-openvpn=y
+CONFIG_PACKAGE_sing-box=y
+
+# Policy routing (vault subnet -> tunnel) + kill-switch support.
+CONFIG_PACKAGE_pbr=y
+
+# Helpers used by the wizard backend.
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_ca-bundle=y
+CONFIG_PACKAGE_jsonfilter=y
+CONFIG_PACKAGE_coreutils-base64=y
+# jshn/ubus/uci/firewall4/dnsmasq already in the default set.
+
+# Optional (large): full v2rayA UI instead of / alongside sing-box import.
+# Needs the v2raya-openwrt feed (https://github.com/v2raya/v2raya-openwrt):
+# CONFIG_PACKAGE_v2raya=y
+# CONFIG_PACKAGE_luci-app-v2raya=y

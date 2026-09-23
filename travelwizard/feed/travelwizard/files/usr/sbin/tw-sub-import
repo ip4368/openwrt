@@ -1,0 +1,299 @@
+#!/bin/sh
+# Import a proxy subscription URL or a single proxy link into a sing-box
+# config with a TUN inbound. Supports vmess://, vless://, trojan:// and
+# ss:// links, plain or base64-wrapped subscription bodies.
+# Usage: tw-sub-import '<url|link|->' [out-path]
+[ -r /usr/share/libubox/jshn.sh ] && . /usr/share/libubox/jshn.sh || NO_JSHN=1
+
+INPUT="$1"
+OUT="${2:-$(uci -q get travelwizard.sb.config_file)}"
+OUT="${OUT:-/etc/sing-box/config.json}"
+[ -z "$INPUT" ] && { echo '{"error":"missing input"}'; exit 1; }
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+# --- helpers -------------------------------------------------------------
+tw_b64d() { # urlsafe base64 decode, tolerant of missing padding
+	printf '%s' "$1" | tr '_-' '/+' | awk '{ l = length % 4; print $0 substr("===", 1, (4 - l) % 4) }' \
+		| base64 -d 2>/dev/null
+}
+urldecode() {
+	# %XX decoding via printf %b. BusyBox printf understands \xHH.
+	printf '%b' "$(sed 's/%/\\x/g')"
+}
+jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+join_csv() { tr '\n' ',' | sed 's/,$//'; } # busybox has no paste(1)
+qparam() { # $1 query, $2 key
+	printf '&%s' "$1" | sed -n "s/.*[?&]$2=\\([^&]*\\).*/\\1/p" | urldecode
+}
+split_link() { # $1 link -> sets LINK_BODY + LINK_TAG (globals, no subshell)
+	local rest="$1"
+	LINK_TAG=""
+	case "$rest" in
+		*#*) LINK_TAG=$(printf '%s' "${rest#*#}" | urldecode); rest=${rest%%#*} ;;
+	esac
+	LINK_BODY="$rest"
+}
+
+emit_vmess() { # $1 body(base64 json) $2 tag $3 idx
+	local js server port uuid sec net tls host path
+	js=$(tw_b64d "$1")
+	[ -z "$js" ] && return 1
+	server=$(printf '%s' "$js" | jsonfilter -e '@.add' 2>/dev/null)
+	port=$(printf '%s' "$js" | jsonfilter -e '@.port' 2>/dev/null)
+	uuid=$(printf '%s' "$js" | jsonfilter -e '@.id' 2>/dev/null)
+	sec=$(printf '%s' "$js" | jsonfilter -e '@.scy' 2>/dev/null)
+	net=$(printf '%s' "$js" | jsonfilter -e '@.net' 2>/dev/null)
+	tls=$(printf '%s' "$js" | jsonfilter -e '@.tls' 2>/dev/null)
+	host=$(printf '%s' "$js" | jsonfilter -e '@.host' 2>/dev/null)
+	path=$(printf '%s' "$js" | jsonfilter -e '@.path' 2>/dev/null)
+	[ -z "$server" ] || [ -z "$uuid" ] && return 1
+	: "${port:=443}"; : "${sec:=auto}"; : "${net:=tcp}"
+	{
+		printf '{"type":"vmess","tag":"%s","server":"%s","server_port":%s,"uuid":"%s","security":"%s","network":"tcp"' \
+			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$uuid")" "$(jesc "$sec")"
+		[ "$tls" = "tls" ] && printf ',"tls":{"enabled":true,"server_name":"%s"}' "$(jesc "${host:-$server}")"
+		[ "$net" = "ws" ] && printf ',"transport":{"type":"ws","path":"%s","headers":{"Host":"%s"}}' \
+			"$(jesc "${path:-/}")" "$(jesc "${host:-$server}")"
+		printf '}'
+	} >"$TMP/obs-$3.json"
+	echo "$2" >>"$TMP/tags"
+}
+
+emit_vless() { # $1 user@host:port?query $2 tag $3 idx
+	local uh query uuid server port enc sec sni fp type path host pbk sid flow
+	uh=${1%%\?*}; query=""; case "$1" in *\?*) query=${1#*\?};; esac
+	uuid=${uh%%@*}; uh=${uh#*@}; server=${uh%%:*}; port=${uh##*:}
+	[ -z "$uuid" ] || [ -z "$server" ] && return 1
+	enc=$(qparam "$query" encryption); sec=$(qparam "$query" security)
+	sni=$(qparam "$query" sni); fp=$(qparam "$query" fp)
+	type=$(qparam "$query" type); path=$(qparam "$query" path)
+	host=$(qparam "$query" host); pbk=$(qparam "$query" pbk)
+	sid=$(qparam "$query" sid); flow=$(qparam "$query" flow)
+	: "${port:=443}"; : "${type:=tcp}"
+	{
+		printf '{"type":"vless","tag":"%s","server":"%s","server_port":%s,"uuid":"%s","network":"tcp"' \
+			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$uuid")"
+		[ "$type" = "tcp" ] && [ -n "$flow" ] && [ "$flow" != "none" ] \
+			&& printf ',"flow":"%s"' "$(jesc "$flow")"
+		if [ "$sec" = "tls" ] || [ "$sec" = "reality" ]; then
+			printf ',"tls":{"enabled":true,"server_name":"%s"' "$(jesc "${sni:-$server}")"
+			if [ "$sec" = "reality" ]; then
+				printf ',"reality":{"enabled":true,"public_key":"%s","short_id":"%s"}' \
+					"$(jesc "$pbk")" "$(jesc "$sid")"
+			fi
+			[ -n "$fp" ] && printf ',"utls":{"enabled":true,"fingerprint":"%s"}' "$(jesc "$fp")"
+			printf '}'
+		fi
+		[ "$type" = "ws" ] && printf ',"transport":{"type":"ws","path":"%s","headers":{"Host":"%s"}}' \
+			"$(jesc "${path:-/}")" "$(jesc "${host:-$server}")"
+		printf '}'
+	} >"$TMP/obs-$3.json"
+	echo "$2" >>"$TMP/tags"
+}
+
+emit_trojan() { # $1 pass@host:port?query $2 tag $3 idx
+	local uh query pass server port sni
+	uh=${1%%\?*}; query=""; case "$1" in *\?*) query=${1#*\?};; esac
+	pass=${uh%%@*}; uh=${uh#*@}; server=${uh%%:*}; port=${uh##*:}
+	[ -z "$pass" ] || [ -z "$server" ] && return 1
+	: "${port:=443}"
+	sni=$(qparam "$query" sni)
+	{
+		printf '{"type":"trojan","tag":"%s","server":"%s","server_port":%s,"password":"%s","tls":{"enabled":true,"server_name":"%s"}}' \
+			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$pass")" "$(jesc "${sni:-$server}")"
+	} >"$TMP/obs-$3.json"
+	echo "$2" >>"$TMP/tags"
+}
+
+emit_ss() { # $1 [base64|method:pass]@host:port... $2 tag $3 idx
+	local rest ui hp method pass server port
+	rest=${1%%\?*}
+	ui=${rest%%@*}; hp=${rest#*@}
+	if [ "$ui" = "$rest" ]; then # fully base64-encoded
+		rest=$(tw_b64d "$rest"); ui=${rest%%@*}; hp=${rest#*@}
+	fi
+	case "$ui" in
+		*:*) : ;; # method:pass already
+		*) ui=$(tw_b64d "$ui") ;; # base64 userinfo
+	esac
+	method=${ui%%:*}; pass=${ui#*:}; server=${hp%%:*}; port=${hp##*:}
+	[ -z "$method" ] || [ -z "$server" ] && return 1
+	: "${port:=8388}"
+	{
+		printf '{"type":"shadowsocks","tag":"%s","server":"%s","server_port":%s,"method":"%s","password":"%s"}' \
+			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$method")" "$(jesc "$pass")"
+	} >"$TMP/obs-$3.json"
+	echo "$2" >>"$TMP/tags"
+}
+
+# Explain an empty result by sniffing what the server actually sent.
+diag_fail() {
+	local preview bad
+	preview=$(printf '%s' "$TEXT0" | tr '\n' ' ' \
+		| tr -cd 'A-Za-z0-9:;.,/+?=&%#@_() -' | cut -c1-80)
+	case "$TEXT0" in
+		{*|\[*)
+			echo '{"error":"this looks like a JSON subscription, which is not supported (need v2ray-style links: vmess/vless/trojan/ss)"}'
+			exit 1 ;;
+	esac
+	case "$TEXT0" in
+		*"proxies:"*|*"proxy-groups:"*|*"mixed-port:"*|*"socks-port:"*)
+			echo '{"error":"this looks like a Clash config, which is not supported (need v2ray-style links: vmess/vless/trojan/ss)"}'
+			exit 1 ;;
+	esac
+	case "$TEXT0" in
+		*"<html"*|*"<!DOCTYPE"*|*"<HTML"*|*"<title"*|*"<TITLE"*|*"<a "*)
+			echo '{"error":"the server returned a web page, not a subscription (check the URL and any access key)"}'
+			exit 1 ;;
+	esac
+	if [ "$FETCHED" -gt 0 ]; then
+		printf '{"error":"followed %s nested subscription link(s), found no supported servers"}\n' "$FETCHED"
+		exit 1
+	fi
+	if [ -s "$TMP/unknown" ]; then
+		bad=$(sort -u "$TMP/unknown" | join_csv)
+		printf '{"error":"no supported links (found only unsupported types: %s)"}\n' "$bad"
+		exit 1
+	fi
+	printf '{"error":"no supported proxy links found (vmess/vless/trojan/ss); got %s bytes starting with: %s"}\n' \
+		"${#TEXT0}" "$preview"
+	exit 1
+}
+
+decode_text() { # unwrap base64 subscription bodies: RAW -> TEXT
+	case "$RAW" in
+		*"://"*) TEXT="$RAW" ;;
+		*)
+			DECODED=$(tw_b64d "$(printf '%s' "$RAW" | tr -d ' \t\r\n')")
+			case "$DECODED" in *"://"* ) TEXT="$DECODED" ;; *) TEXT="$RAW" ;; esac
+			;;
+	esac
+	TEXT=$(printf '%s' "$TEXT" | sed 's/^[[:space:]]*//')
+}
+
+process_text() { # parse global TEXT, appending outbounds/tags; queues sub-URLs
+	local line scheme rest body tag base n
+	printf '%s\n' "$TEXT" >>"$TMP/alltext"
+	printf '%s\n' "$TEXT" >"$TMP/lines"
+	QUEUE_OK=1
+	case "$TEXT" in *"<"*) QUEUE_OK="" ;; esac
+	while IFS= read -r line || [ -n "$line" ]; do
+		[ "$idx" -ge 32 ] && break # cap: keep the config small on flash
+		line=$(printf '%s' "$line" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+		case "$line" in ""|\#*) continue ;; esac
+		case "$line" in *://*) : ;; *) continue ;; esac
+		if grep -qxF -- "$line" "$TMP/seenlines" 2>/dev/null; then continue; fi
+		echo "$line" >>"$TMP/seenlines"
+		scheme=${line%%://*}; rest=${line#*://}
+		scheme=$(printf '%s' "$scheme" | tr 'A-Z' 'a-z')
+		split_link "$rest"; body="$LINK_BODY"; tag="$LINK_TAG"
+		idx=$((idx + 1))
+		[ -z "$tag" ] && tag="proxy-$idx"
+		base="$tag"; n=1
+		while grep -qxF -- "$tag" "$TMP/tags" 2>/dev/null; do
+			n=$((n + 1)); tag="$base-$n"
+		done
+		case "$scheme" in
+		vmess) emit_vmess "$body" "$tag" "$idx" || idx=$((idx - 1)) ;;
+		vless) emit_vless "$body" "$tag" "$idx" || idx=$((idx - 1)) ;;
+		trojan) emit_trojan "$body" "$tag" "$idx" || idx=$((idx - 1)) ;;
+		ss|shadowsocks) emit_ss "$body" "$tag" "$idx" || idx=$((idx - 1)) ;;
+		http|https)
+				idx=$((idx - 1))
+				echo "$scheme" >>"$TMP/unknown"
+				[ -n "$QUEUE_OK" ] && echo "$line" >>"$TMP/subqueue" ;;
+			*) idx=$((idx - 1)); echo "$scheme" >>"$TMP/unknown" ;;
+		esac
+	done <"$TMP/lines"
+}
+
+# --- collect + process (follows nested subscription URLs, depth-limited) --
+: >"$TMP/tags"; : >"$TMP/unknown"; : >"$TMP/subqueue"; : >"$TMP/seen"
+: >"$TMP/seenlines"; : >"$TMP/alltext"
+idx=0; FETCHED=0
+RAW=""
+case "$INPUT" in
+	-) RAW=$(cat) ;;
+	http://*|https://*)
+		RAW=$(curl -sL -f --compressed --max-time 20 "$INPUT" 2>/dev/null)
+		[ -z "$RAW" ] && { echo '{"error":"subscription fetch failed (unreachable or HTTP error)"}'; exit 1; }
+		echo "$INPUT" >>"$TMP/seen"
+		;;
+	*) RAW="$INPUT" ;;
+esac
+decode_text
+TEXT0="$TEXT"
+process_text
+DEPTH=1
+while [ "$DEPTH" -le 2 ] && [ -s "$TMP/subqueue" ]; do
+	sort -u "$TMP/subqueue" | head -n 4 >"$TMP/level"
+	: >"$TMP/subqueue"
+	while IFS= read -r url || [ -n "$url" ]; do
+		[ -z "$url" ] && continue
+		grep -qxF -- "$url" "$TMP/seen" 2>/dev/null && continue
+		echo "$url" >>"$TMP/seen"
+		BODY=$(curl -sL -f --compressed --max-time 10 "$url" 2>/dev/null) || continue
+		[ -z "$BODY" ] && continue
+		FETCHED=$((FETCHED + 1))
+		RAW="$BODY"; decode_text; process_text
+	done <"$TMP/level"
+	DEPTH=$((DEPTH + 1))
+done
+
+[ "$idx" -eq 0 ] && diag_fail
+
+# --- assemble sing-box config --------------------------------------------
+FIRST_TAG=$(head -n 1 "$TMP/tags")
+DEFAULT_TAG="$FIRST_TAG"
+if [ -n "$TW_DEFAULT_TAG" ] && grep -qxF -- "$TW_DEFAULT_TAG" "$TMP/tags" 2>/dev/null; then
+	DEFAULT_TAG="$TW_DEFAULT_TAG"
+fi
+SELECT_LIST=$(sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/"&"/' "$TMP/tags" | join_csv)
+OUTBOUND_FRAGS=$(for f in "$TMP"/obs-*.json; do cat "$f"; echo ","; done)
+
+mkdir -p "${OUT%/*}"
+# NOTE: gvisor stack, not system: with system, TCP SYNs entering tun0
+# vanish silently on this build (verified live), while gvisor relays
+# them through the proxy correctly.
+# NOTE: the proxy selector lists only imported servers. A "direct" member
+# would let vault traffic leave through sing-box unproxied, bypassing the
+# kill switch.
+{
+	printf '{"log":{"level":"warn"},"inbounds":[{"type":"tun","tag":"tun-in","interface_name":"tun0","address":["172.19.0.1/30"],"stack":"gvisor","auto_route":false}],"outbounds":[%s{"type":"block","tag":"block"},{"type":"selector","tag":"proxy","outbounds":[%s],"default":"%s"}],"route":{"final":"proxy","auto_detect_interface":true}}' \
+		"$OUTBOUND_FRAGS" "$SELECT_LIST" "$(jesc "$DEFAULT_TAG")"
+} >"$OUT"
+chmod 600 "$OUT"
+case "$OUT" in
+	*.json)
+		cp "$TMP/tags" "${OUT%.json}.tags"
+		awk '!seen[$0]++' "$TMP/alltext" >"${OUT%.json}.src"
+		chmod 600 "${OUT%.json}.tags" "${OUT%.json}.src" ;;
+esac
+
+if command -v sing-box >/dev/null 2>&1; then
+	if ! sing-box check -c "$OUT" >/dev/null 2>&1; then
+		echo '{"error":"generated config failed sing-box check"}'
+		exit 1
+	fi
+	CHECKED=true
+else
+	CHECKED=false
+fi
+
+if [ -z "$NO_JSHN" ]; then
+json_init
+json_add_int count "$idx"
+json_add_array tags
+while IFS= read -r t; do json_add_string "" "$t"; done <"$TMP/tags"
+json_close_array
+json_add_string config "$OUT"
+[ "$CHECKED" = "true" ] && json_add_boolean checked 1 || json_add_boolean checked 0
+json_dump
+else # off-target (no libubox): same summary, hand-rolled
+	if [ "$CHECKED" = "true" ]; then CHECKED_JSON=true; else CHECKED_JSON=false; fi
+	printf '{"count":%d,"tags":[%s],"config":"%s","checked":%s}\n' "$idx" \
+		"$(sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/"&"/' "$TMP/tags" | join_csv)" \
+		"$(jesc "$OUT")" "$CHECKED_JSON"
+fi

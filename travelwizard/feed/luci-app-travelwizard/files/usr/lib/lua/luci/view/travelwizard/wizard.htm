@@ -1,0 +1,528 @@
+<%+header%>
+<h2 name="content"><%:Setup Wizard%></h2>
+<p><%:Three steps to get online: join Wi-Fi, pass the hotel login page, then turn on the VPN for your private network.%></p>
+
+<div class="tw-cards">
+	<div class="tw-card"><h4><%:Hotel Wi-Fi%></h4><div id="st-wan">…</div></div>
+	<div class="tw-card"><h4><%:Internet%></h4><div id="st-net">…</div></div>
+	<div class="tw-card"><h4><%:Private network%></h4><div id="st-vpn">…</div></div>
+</div>
+
+<div class="tw-note">
+	<strong><%:Your two networks:%></strong>
+	<span id="ssid-mgmt">…</span> (<%:setup, direct internet%>),
+	<span id="ssid-vault">…</span> (<%:always VPN, or no internet%>).
+	<a id="tw-advanced" href="<%=luci.dispatcher.build_url("admin")%>"><%:Advanced (full LuCI)%></a>
+</div>
+
+<div class="cbi-section">
+<h3>1. <%:Upstream internet%></h3>
+<div class="tw-box" style="margin:.5em 0;max-width:44em">
+	<p id="up-status">…</p>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Use%></label>
+		<div class="cbi-value-field"><select id="up-select">
+			<option value="auto"><%:Automatic (cable preferred)%></option>
+			<option value="wifi"><%:Prefer Wi-Fi%></option>
+			<option value="ethernet"><%:Prefer cable%></option>
+		</select>
+		<button class="cbi-button" id="btn-upstream"><%:Apply%></button></div></div>
+	<p><span id="up-msg"></span></p>
+</div>
+<h3><%:Join hotel or home Wi-Fi%></h3>
+<p id="tw-current"></p>
+<p>
+	<button class="cbi-button" id="btn-scan"><%:Scan networks%></button>
+	<span id="scan-msg"></span>
+</p>
+<table class="table" id="net-table" style="display:none">
+	<tr class="tr table-titles"><th class="th"><%:Network%></th><th class="th"><%:Band%></th><th class="th"><%:Signal%></th><th class="th"><%:Security%></th><th class="th"></th></tr>
+	<tbody id="net-list"></tbody>
+</table>
+<div id="join-box" style="display:none" class="tw-box">
+	<h4 id="join-ssid"></h4>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Password (blank if open)%></label>
+		<div class="cbi-value-field"><input type="password" id="join-key" class="cbi-input-password" autocomplete="off"></div></div>
+	<p><button class="cbi-button cbi-button-apply" id="btn-join"><%:Connect%></button>
+	<span id="join-msg"></span></p>
+</div>
+</div>
+
+<div class="cbi-section">
+<h3>2. <%:Internet & hotel login page%></h3>
+<p id="net-status"></p>
+<p>
+	<button class="cbi-button" id="btn-recheck"><%:Check again%></button>
+	<a class="cbi-button" id="btn-portal" style="display:none" target="_blank" rel="noopener"><%:Open login page%></a>
+</p>
+</div>
+
+<div class="cbi-section">
+<h3>3. <%:VPN profiles for your private network%></h3>
+<p>Save as many as you like (home, travel, backup) and switch anytime. Only the active one is used; with none active, the private network has no internet (kill switch).</p>
+<div id="prof-list"></div>
+<p><button class="cbi-button" id="btn-prof-new">+ New profile</button>
+<button class="cbi-button cbi-button-remove" id="btn-vpn-off"><%:Turn VPN off%></button>
+<span id="vpn-msg"></span></p>
+<div id="prof-edit" style="display:none" class="tw-box">
+<input type="hidden" id="prof-id" value="">
+<div class="cbi-value"><label class="cbi-value-title"><%:Name%></label>
+	<div class="cbi-value-field"><input id="prof-name" class="cbi-input-text" maxlength="64" placeholder="e.g. Tokyo VLESS"></div></div>
+<div class="tw-tabs">
+	<button class="cbi-button" data-mode="wireguard">WireGuard</button>
+	<button class="cbi-button" data-mode="openvpn">OpenVPN</button>
+	<button class="cbi-button" data-mode="singbox"><%:Proxy (subscription)%></button>
+</div>
+
+<div id="tab-wireguard" class="tw-box" style="display:none">
+	<div class="cbi-value"><label class="cbi-value-title"><%:Paste .conf (auto-fill)%></label>
+		<div class="cbi-value-field"><textarea id="wg-paste" rows="4" style="width:100%"></textarea></div></div>
+	<p><button class="cbi-button" id="btn-wg-parse"><%:Parse%></button></p>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Private key%></label>
+		<div class="cbi-value-field"><input id="wg-private_key" class="cbi-input-text" autocomplete="off"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Addresses%></label>
+		<div class="cbi-value-field"><input id="wg-addresses" class="cbi-input-text" placeholder="10.0.0.2/32"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:DNS%></label>
+		<div class="cbi-value-field"><input id="wg-dns" class="cbi-input-text" placeholder="1.1.1.1"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Peer public key%></label>
+		<div class="cbi-value-field"><input id="wg-peer_public_key" class="cbi-input-text" autocomplete="off"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Preshared key (optional)%></label>
+		<div class="cbi-value-field"><input id="wg-preshared_key" class="cbi-input-text" autocomplete="off"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Endpoint host%></label>
+		<div class="cbi-value-field"><input id="wg-endpoint_host" class="cbi-input-text"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Endpoint port%></label>
+		<div class="cbi-value-field"><input id="wg-endpoint_port" class="cbi-input-text" placeholder="51820"></div></div>
+</div>
+
+<div id="tab-openvpn" class="tw-box" style="display:none">
+	<div class="cbi-value"><label class="cbi-value-title"><%:Paste .ovpn config%></label>
+		<div class="cbi-value-field"><textarea id="ovpn-config" rows="6" style="width:100%"></textarea></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Username (if needed)%></label>
+		<div class="cbi-value-field"><input id="ovpn-username" class="cbi-input-text" autocomplete="off"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Password (if needed)%></label>
+		<div class="cbi-value-field"><input type="password" id="ovpn-password" class="cbi-input-password" autocomplete="off"></div></div>
+</div>
+
+<div id="tab-singbox" class="tw-box" style="display:none">
+	<div class="cbi-value"><label class="cbi-value-title"><%:Subscription URL%></label>
+		<div class="cbi-value-field"><input id="sb-sub" class="cbi-input-text" style="width:100%"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:…or paste link(s)%></label>
+		<div class="cbi-value-field"><textarea id="sb-links" rows="3" style="width:100%" placeholder="vless://… / vmess://… / trojan://… / ss://…"></textarea></div></div>
+	<p>Subscription or links are fetched and imported when you save.</p>
+	<div id="sb-servers"></div>
+	<p><button class="cbi-button" id="btn-sb-refresh">Refresh subscription</button></p>
+</div>
+	<p><button class="cbi-button cbi-button-apply" id="btn-prof-save">Save</button>
+	<button class="cbi-button cbi-button-apply" id="btn-prof-use">Save & use</button>
+	<span id="prof-msg"></span></p>
+</div>
+</div>
+
+<div class="cbi-section">
+<h3><%:Your Wi-Fi names & passwords%></h3>
+<p><%:Applies to both 2.4 and 5 GHz. Changing the network you are connected to right now will disconnect you — just reconnect with the new name.%></p>
+<div class="tw-box">
+	<h4><%:Setup network (direct internet)%></h4>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Name%></label>
+		<div class="cbi-value-field"><input id="wifi-mgmt-ssid" class="cbi-input-text" maxlength="32"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Password%></label>
+		<div class="cbi-value-field"><input id="wifi-mgmt-key" class="cbi-input-text" autocomplete="off" minlength="8" maxlength="63"></div></div>
+	<h4><%:Private network (always VPN)%></h4>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Name%></label>
+		<div class="cbi-value-field"><input id="wifi-vault-ssid" class="cbi-input-text" maxlength="32"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"><%:Password%></label>
+		<div class="cbi-value-field"><input id="wifi-vault-key" class="cbi-input-text" autocomplete="off" minlength="8" maxlength="63"></div></div>
+	<p><button class="cbi-button cbi-button-apply" id="btn-wifi-save"><%:Save Wi-Fi names%></button>
+	<span id="wifi-msg"></span></p>
+</div>
+</div>
+
+<div class="cbi-section">
+<h3>4. <%:Verify the tunnel%></h3>
+<p id="health"></p>
+<p><button class="cbi-button" id="btn-health"><%:Check VPN health%></button></p>
+</div>
+
+<script>
+var API = '<%=luci.dispatcher.build_url("admin","travelwizard","api")%>';
+var TOKEN = '<%=token%>';
+function post(path, data) {
+	var f = new FormData();
+	f.append('token', TOKEN); /* required by the post() API entries (CSRF) */
+	for (var k in data) f.append(k, data[k]);
+	return fetch(API + path, { method: 'POST', body: f, credentials: 'same-origin' })
+		.then(function(r) { return r.json(); });
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
+	return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+/* status header */
+function refreshStatus() {
+	post('/scan', {}).then(function(j) {
+		var cur = j.current || {};
+		document.getElementById('st-wan').innerHTML = cur.up
+			? '<span class="tw-ok">●</span> ' + esc(cur.ssid || cur.upstream)
+			: '<span class="tw-bad">○</span> <%:not connected%>';
+		document.getElementById('tw-current').innerHTML = cur.up
+			? '<%:Connected to%> <strong>' + esc(cur.ssid) + '</strong>'
+			: (cur.saved && cur.saved !== '__unset__'
+				? '<%:Last network:%> ' + esc(cur.saved)
+				: '<%:Not connected yet.%>');
+	});
+	post('/captive', {}).then(function(j) { showCaptive(j); });
+	post('/health', {}).then(function(j) { showHealth(j, false); });
+	refreshUpstream();
+	post('/vpn_get', {}).then(function(j) {
+		document.getElementById('ssid-mgmt').textContent = j.mgmt_ssid || '';
+		document.getElementById('ssid-vault').textContent = j.vault_ssid || '';
+		document.getElementById('st-vpn').textContent =
+			(j.vpn_mode && j.vpn_mode !== 'off') ? j.vpn_mode : '<%:off%>';
+	});
+	refreshProfiles();
+}
+
+/* step 1: upstream choice */
+function refreshUpstream() {
+	post('/upstream', {}).then(function(j) {
+		var w = j.wifi || {}, c = j.wired || {};
+		var wt = w.up ? esc(w.ssid || 'up') + (w.ip ? ' (' + esc(w.ip) + ')' : '') : '<%:not joined%>';
+		var ct = (c.carrier ? '<%:plugged%>' : '<%:no cable%>') +
+			((c.up && c.ip) ? ', ' + esc(c.ip) : '');
+		document.getElementById('up-status').innerHTML =
+			'Wi-Fi: ' + wt + ' · Cable: ' + ct +
+			' · Using: <strong>' + esc(j.active || 'none') + '</strong>';
+		document.getElementById('up-select').value = j.choice || 'auto';
+	});
+}
+document.getElementById('btn-upstream').addEventListener('click', function() {
+	var m = document.getElementById('up-msg');
+	m.textContent = '<%:applying…%>';
+	post('/upstream', { mode: document.getElementById('up-select').value })
+	.then(function(j) {
+		var s = '<%:using:%> <strong>' + esc(j.active || 'none') + '</strong>';
+		if (j.subnet && j.subnet.changed)
+			s += ' (<%:moved to%> ' + esc(j.subnet.lan) + ')';
+		m.innerHTML = j.error
+			? '<span class="tw-bad">' + esc(j.error) + '</span>'
+			: '<span class="tw-ok">' + s + '</span>';
+		if (j.internet) showCaptive(j.internet);
+		refreshStatus();
+	});
+});
+
+/* step 1: scan + join */
+var PICK = null;
+function bandLabel(b) { return b === '5g' ? '5 GHz' : b === '2g' ? '2.4 GHz' : ''; }
+document.getElementById('btn-scan').addEventListener('click', function() {
+	document.getElementById('scan-msg').textContent = '<%:scanning…%>';
+	post('/scan', {}).then(function(j) {
+		document.getElementById('scan-msg').textContent = '';
+		var tb = document.getElementById('net-list'); tb.innerHTML = '';
+		(j.networks || []).forEach(function(n) {
+			var hidden = (n.ssid || '').indexOf('(hidden)') === 0;
+			var tr = document.createElement('tr'); tr.className = 'tr';
+			tr.innerHTML = '<td class="td">' + esc(n.ssid) + '</td><td class="td">' +
+				bandLabel(n.band) + '</td><td class="td">' +
+				esc(n.signal) + ' dBm</td><td class="td">' + esc(n.encryption) + '</td>';
+			var td = document.createElement('td'); td.className = 'td';
+			if (!hidden) {
+				var b = document.createElement('button');
+				b.className = 'cbi-button cbi-button-action'; b.textContent = '<%:Select%>';
+				b.addEventListener('click', function() {
+					PICK = { ssid: n.ssid, band: n.band || '',
+						enc: n.encryption || '', bssid: n.bssid || '' };
+					document.getElementById('join-ssid').textContent =
+						n.ssid + ' (' + bandLabel(n.band) + ')';
+					document.getElementById('join-box').style.display = 'block';
+					document.getElementById('join-key').focus();
+				});
+				td.appendChild(b);
+			}
+			tr.appendChild(td); tb.appendChild(tr);
+		});
+		document.getElementById('net-table').style.display = '';
+	});
+});
+document.getElementById('btn-join').addEventListener('click', function() {
+	if (!PICK) return;
+	var m = document.getElementById('join-msg');
+	m.textContent = '<%:connecting…%>';
+	post('/join', { ssid: PICK.ssid, key: document.getElementById('join-key').value,
+		band: PICK.band, enc: PICK.enc, bssid: PICK.bssid })
+	.then(function(j) {
+		if (!j.linked) { m.innerHTML = '<span class="tw-bad">' + esc(j.error || 'failed') + '</span>'; return; }
+		var s = '<span class="tw-ok"><%:connected!%></span>';
+		if (j.subnet && j.subnet.changed)
+			s += ' <%:Note: hotel network clashed with ours; we moved to%> ' +
+				esc(j.subnet.lan) + ' / ' + esc(j.subnet.vault) + '.';
+		m.innerHTML = s;
+		if (j.internet) showCaptive(j.internet);
+		refreshStatus();
+	});
+});
+
+/* step 2: captive */
+function showCaptive(j) {
+	var p = document.getElementById('net-status');
+	var b = document.getElementById('btn-portal');
+	document.getElementById('st-net').innerHTML =
+		j.state === 'online' ? '<span class="tw-ok">● <%:online%></span>' :
+		j.state === 'captive' ? '<span class="tw-warn">● <%:login needed%></span>' :
+		'<span class="tw-bad">○ ' + esc(j.state) + '</span>';
+	if (j.state === 'online') { p.textContent = '<%:Internet works. No login page needed.%>'; b.style.display = 'none'; }
+	else if (j.state === 'captive') {
+		p.innerHTML = '<span class="tw-warn"><%:This Wi-Fi needs a login.%></span> ' + esc(j.detail || '');
+		b.href = j.login_url || '#'; b.style.display = '';
+	} else { p.textContent = '<%:No internet:%> ' + (j.reason || j.state); b.style.display = 'none'; }
+}
+document.getElementById('btn-recheck').addEventListener('click', function() {
+	post('/captive', {}).then(function(j) { showCaptive(j); });
+});
+
+/* step 3: profiles */
+var PROF_MODE = 'wireguard', PROF_ID = '', PROF_ACTIVE = false;
+function profTypeLabel(t) {
+	return t === 'wireguard' ? 'WireGuard' : t === 'openvpn' ? 'OpenVPN' :
+		t === 'singbox' ? 'Proxy' : t;
+}
+function showProfTab(mode) {
+	PROF_MODE = mode;
+	document.querySelectorAll('[id^=tab-]').forEach(function(t) { t.style.display = 'none'; });
+	document.getElementById('tab-' + mode).style.display = 'block';
+}
+document.querySelectorAll('[data-mode]').forEach(function(b) {
+	b.addEventListener('click', function() { showProfTab(b.getAttribute('data-mode')); });
+});
+function refreshProfiles() {
+	post('/profiles', {}).then(function(j) {
+		var box = document.getElementById('prof-list'); box.innerHTML = '';
+		(j.profiles || []).forEach(function(p) {
+			var d = document.createElement('div');
+			d.innerHTML = '<strong>' + (p.active ? '● ' : '○ ') + esc(p.name) + '</strong> ' +
+				'(' + profTypeLabel(p.type) + ')' +
+				(p.summary ? ' — ' + esc(p.summary) : '');
+			var sp = document.createElement('span'); sp.style.float = 'right';
+			if (!p.active) {
+				var u = document.createElement('button');
+				u.className = 'cbi-button cbi-button-apply'; u.textContent = 'Use';
+				u.addEventListener('click', function() { activateProfile(p.id); });
+				sp.appendChild(u); sp.appendChild(document.createTextNode(' '));
+			}
+			var e = document.createElement('button');
+			e.className = 'cbi-button'; e.textContent = 'Edit';
+			e.addEventListener('click', function() { editProfile(p); });
+			var del = document.createElement('button');
+			del.className = 'cbi-button cbi-button-remove'; del.textContent = 'Delete';
+			del.addEventListener('click', function() {
+				if (confirm('Delete "' + p.name + '"?')) {
+					post('/profile_delete', { id: p.id }).then(function() {
+						refreshProfiles(); refreshStatus();
+					});
+				}
+			});
+			sp.appendChild(e); sp.appendChild(document.createTextNode(' ')); sp.appendChild(del);
+			d.appendChild(sp); box.appendChild(d);
+		});
+		if (!(j.profiles || []).length)
+			box.innerHTML = '<p>No profiles yet — create one below.</p>';
+	});
+}
+function clearProfForm() {
+	document.getElementById('prof-id').value = '';
+	document.getElementById('prof-name').value = '';
+	['private_key', 'addresses', 'dns', 'peer_public_key', 'preshared_key',
+		'endpoint_host', 'endpoint_port'].forEach(function(k) {
+		var el = document.getElementById('wg-' + k);
+		el.value = ''; el.placeholder = '';
+	});
+	document.getElementById('wg-paste').value = '';
+	document.getElementById('ovpn-config').value = '';
+	document.getElementById('ovpn-config').placeholder = '';
+	document.getElementById('ovpn-username').value = '';
+	document.getElementById('ovpn-password').value = '';
+	document.getElementById('sb-sub').value = '';
+	document.getElementById('sb-links').value = '';
+	document.getElementById('sb-servers').innerHTML = '';
+	document.getElementById('prof-msg').textContent = '';
+	PROF_ACTIVE = false;
+}
+function editProfile(p) {
+	clearProfForm();
+	PROF_ID = p.id;
+	document.getElementById('prof-id').value = p.id;
+	document.getElementById('prof-name').value = p.name || '';
+	showProfTab(p.type);
+	if (p.type === 'wireguard') {
+		['addresses', 'dns', 'peer_public_key', 'endpoint_host', 'endpoint_port'].forEach(function(k) {
+			if (p[k] != null) document.getElementById('wg-' + k).value = p[k];
+		});
+		if (p.has_private_key) document.getElementById('wg-private_key').placeholder = '(unchanged)';
+		if (p.has_preshared_key) document.getElementById('wg-preshared_key').placeholder = '(unchanged)';
+	} else if (p.type === 'openvpn') {
+		if (p.username) document.getElementById('ovpn-username').value = p.username;
+		if (p.has_password) document.getElementById('ovpn-password').placeholder = '(unchanged)';
+		if (p.has_config) document.getElementById('ovpn-config').placeholder = 'Config saved — paste to replace';
+	} else if (p.type === 'singbox') {
+		if (p.sub_url) document.getElementById('sb-sub').value = p.sub_url;
+		if (p.has_config) document.getElementById('sb-links').placeholder = 'Servers imported — paste new links/URL to replace';
+		var sbox = document.getElementById('sb-servers'); sbox.innerHTML = '';
+		var srv = Array.isArray(p.servers) ? p.servers : [];
+		srv.forEach(function(t) {
+			var lab = document.createElement('label');
+			var inp = document.createElement('input');
+			inp.type = 'radio'; inp.name = 'sb-server'; inp.value = t;
+			if (t === p.server) inp.checked = true;
+			lab.appendChild(inp);
+			lab.appendChild(document.createTextNode(' ' + t));
+			sbox.appendChild(lab); sbox.appendChild(document.createElement('br'));
+		});
+		if (srv.length)
+			sbox.insertAdjacentHTML('afterbegin', '<p><strong>Servers (pick the active one):</strong></p>');
+	}
+	PROF_ACTIVE = !!p.active;
+	document.getElementById('prof-edit').style.display = 'block';
+}
+document.getElementById('btn-sb-refresh').addEventListener('click', function() {
+	if (!PROF_ID) {
+		document.getElementById('prof-msg').innerHTML = '<span class="tw-warn">Save the profile first.</span>';
+		return;
+	}
+	document.getElementById('sb-links').value = '';
+	saveProfile(PROF_ACTIVE);
+});
+document.getElementById('btn-prof-new').addEventListener('click', function() {
+	clearProfForm();
+	PROF_ID = '';
+	showProfTab('wireguard');
+	document.getElementById('prof-edit').style.display = 'block';
+	document.getElementById('prof-name').focus();
+});
+function saveProfile(use) {
+	var m = document.getElementById('prof-msg');
+	m.textContent = 'saving…';
+	var d = { id: PROF_ID, name: document.getElementById('prof-name').value,
+		type: PROF_MODE, use: use ? '1' : '0' };
+	['private_key', 'addresses', 'dns', 'peer_public_key', 'preshared_key',
+		'endpoint_host', 'endpoint_port'].forEach(function(k) {
+		d['wg_' + k] = document.getElementById('wg-' + k).value; });
+	d.ovpn_config = document.getElementById('ovpn-config').value;
+	d.ovpn_username = document.getElementById('ovpn-username').value;
+	d.ovpn_password = document.getElementById('ovpn-password').value;
+	d.sub_url = document.getElementById('sb-sub').value;
+	d.links = document.getElementById('sb-links').value;
+	var sel = document.querySelector('input[name=sb-server]:checked');
+	d.server = sel ? sel.value : '';
+	post('/profile_save', d).then(function(j) {
+		if (j.error) { m.innerHTML = '<span class="tw-bad">' + esc(j.error) + '</span>'; return; }
+		if (j.saved) { PROF_ID = j.saved; document.getElementById('prof-id').value = j.saved; }
+		var extra = j.mode ? ' (' + j.mode + (j.profile ? ': ' + j.profile : '') + ')' : '';
+		m.innerHTML = '<span class="tw-ok">' + (use ? 'saved & active' : 'saved') + esc(extra) + '</span>' +
+			(j.warning ? ' <span class="tw-warn">' + esc(j.warning) + '</span>' : '');
+		document.getElementById('sb-links').value = '';
+		document.getElementById('ovpn-config').value = '';
+		refreshProfiles(); refreshStatus();
+		if (PROF_ID) {
+			post('/profiles', {}).then(function(pl) {
+				(pl.profiles || []).forEach(function(p) {
+					if (p.id === PROF_ID) editProfile(p);
+				});
+			});
+		}
+	});
+}
+document.getElementById('btn-prof-save').addEventListener('click', function() { saveProfile(false); });
+document.getElementById('btn-prof-use').addEventListener('click', function() { saveProfile(true); });
+function activateProfile(id) {
+	var m = document.getElementById('vpn-msg');
+	m.textContent = 'applying…';
+	post('/profile_activate', { id: id }).then(function(j) {
+		m.innerHTML = j.error
+			? '<span class="tw-bad">' + esc(j.error) + '</span>'
+			: '<span class="tw-ok">active: ' + esc(j.profile || j.mode || '') + '</span>' +
+				(j.warning ? ' <span class="tw-warn">' + esc(j.warning) + '</span>' : '');
+		refreshProfiles(); refreshStatus();
+	});
+}
+document.getElementById('btn-vpn-off').addEventListener('click', function() {
+	activateProfile('');
+});
+document.getElementById('btn-wg-parse').addEventListener('click', function() {
+	var t = document.getElementById('wg-paste').value, sec = '';
+	t.split('\n').forEach(function(line) {
+		var m;
+		if ((m = line.match(/^\s*\[(.*)\]/))) sec = m[1].toLowerCase();
+		else if ((m = line.match(/^\s*([^#=]+?)\s*=\s*(.+?)\s*$/))) {
+			var k = m[1].trim().toLowerCase(), v = m[2].trim();
+			var map = { privatekey: 'private_key', address: 'addresses', dns: 'dns',
+				publickey: 'peer_public_key', presharedkey: 'preshared_key' };
+			if ((sec === 'interface' || sec === 'peer') && map[k.replace(/\s/g, '')]) {
+				var el = document.getElementById('wg-' + map[k.replace(/\s/g, '')]);
+				if (el) el.value = v;
+			}
+			if (sec === 'peer' && k === 'endpoint' && v.indexOf(':') > 0) {
+				document.getElementById('wg-endpoint_host').value = v.slice(0, v.lastIndexOf(':'));
+				document.getElementById('wg-endpoint_port').value = v.slice(v.lastIndexOf(':') + 1);
+			}
+		}
+	});
+});
+
+
+/* wi-fi names */
+post('/wifi_get', {}).then(function(j) {
+	document.getElementById('wifi-mgmt-ssid').value = j.mgmt_ssid || '';
+	document.getElementById('wifi-mgmt-key').value = j.mgmt_key || '';
+	document.getElementById('wifi-vault-ssid').value = j.vault_ssid || '';
+	document.getElementById('wifi-vault-key').value = j.vault_key || '';
+});
+document.getElementById('btn-wifi-save').addEventListener('click', function() {
+	var m = document.getElementById('wifi-msg');
+	m.textContent = '<%:applying…%>';
+	post('/wifi_set', {
+		mgmt_ssid: document.getElementById('wifi-mgmt-ssid').value,
+		mgmt_key: document.getElementById('wifi-mgmt-key').value,
+		vault_ssid: document.getElementById('wifi-vault-ssid').value,
+		vault_key: document.getElementById('wifi-vault-key').value
+	}).then(function(j) {
+		m.innerHTML = j.error
+			? '<span class="tw-bad">' + esc(j.error) + '</span>'
+			: '<span class="tw-ok"><%:saved on%> ' + j.updated + ' <%:radios. Reconnect if this page drops.%></span>';
+		refreshStatus();
+	});
+});
+
+/* step 4: health */
+function showHealth(j, verbose) {
+	var h = document.getElementById('health');
+	var v = { healthy: 'tw-ok', disabled: '', down: 'tw-bad',
+		'no-egress': 'tw-bad', leaking: 'tw-bad' }[j.verdict] || '';
+	var kline = '';
+	if (j.leak)
+		kline = '<br><span class="tw-bad"><%:LEAK: private traffic exits via the direct IP!%></span>';
+	else if (j.verdict === 'down' && j.kill_holding)
+		kline = '<br><span class="tw-ok"><%:Kill-switch holding: vault clients are blocked until the tunnel is up.%></span>';
+	h.innerHTML = '<%:Status:%> <span class="' + v + '">' + esc(j.verdict) + '</span> — ' +
+		esc(j.tunnel_detail || '') + '<br><%:Direct IP:%> ' + esc(j.direct_ip || '?') +
+		' · <%:Private-network IP:%> ' + esc(j.vault_ip || '?') + kline;
+	if (j.verdict) document.getElementById('st-vpn').innerHTML =
+		'<span class="' + v + '">●</span> ' + esc(j.mode) + ' (' + esc(j.verdict) + ')';
+}
+document.getElementById('btn-health').addEventListener('click', function() {
+	post('/health', {}).then(function(j) { showHealth(j, true); });
+});
+
+refreshStatus();
+</script>
+
+<style>
+.tw-cards{display:flex;gap:1em;flex-wrap:wrap;margin-bottom:1em}
+.tw-card{flex:1;min-width:12em;border:1px solid #ccc;border-radius:8px;padding:.6em .9em;background:#fafafa}
+.tw-card h4{margin:.1em 0 .3em}
+.tw-note{margin-bottom:1.5em}
+.tw-box{border:1px solid #ccc;border-radius:8px;padding:.6em .9em;margin-top:.8em;max-width:36em}
+.tw-tabs{margin:.5em 0}
+.tw-tabs button{margin-right:.4em}
+.tw-ok{color:#0a0;font-weight:bold}.tw-bad{color:#c00;font-weight:bold}.tw-warn{color:#b60;font-weight:bold}
+#tw-advanced{float:right}
+@media(max-width:600px){.tw-card{min-width:100%}}
+</style>
+<%+footer%>
