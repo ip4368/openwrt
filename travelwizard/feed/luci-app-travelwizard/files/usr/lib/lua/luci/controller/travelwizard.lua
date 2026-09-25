@@ -4,6 +4,7 @@ module("luci.controller.travelwizard", package.seeall)
 local http = require("luci.http")
 local util = require("luci.util")
 local uci = require("luci.model.uci").cursor()
+require("nixio.util") -- File:writeall
 
 function index()
 	-- First entry under Status so users land here, not in power-user pages.
@@ -19,10 +20,18 @@ function index()
 	entry({ "admin", "travelwizard", "api", "profile_save" }, post("api_profile_save")).leaf = true
 	entry({ "admin", "travelwizard", "api", "profile_delete" }, post("api_profile_delete")).leaf = true
 	entry({ "admin", "travelwizard", "api", "profile_activate" }, post("api_profile_activate")).leaf = true
+	entry({ "admin", "travelwizard", "api", "profile_server" }, post("api_profile_server")).leaf = true
+	entry({ "admin", "travelwizard", "api", "profile_refresh" }, post("api_profile_refresh")).leaf = true
+	entry({ "admin", "travelwizard", "api", "probe" }, post("api_probe")).leaf = true
 	entry({ "admin", "travelwizard", "api", "health" }, post("api_health")).leaf = true
 	entry({ "admin", "travelwizard", "api", "wifi_get" }, post("api_wifi_get")).leaf = true
 	entry({ "admin", "travelwizard", "api", "wifi_set" }, post("api_wifi_set")).leaf = true
 	entry({ "admin", "travelwizard", "api", "upstream" }, post("api_upstream")).leaf = true
+	entry({ "admin", "travelwizard", "api", "wlan_saved" }, post("api_wlan_saved")).leaf = true
+	entry({ "admin", "travelwizard", "api", "wlan_rejoin" }, post("api_wlan_rejoin")).leaf = true
+	entry({ "admin", "travelwizard", "api", "wlan_forget" }, post("api_wlan_forget")).leaf = true
+	entry({ "admin", "travelwizard", "api", "wlan_disconnect" }, post("api_wlan_disconnect")).leaf = true
+	entry({ "admin", "travelwizard", "api", "wifi_qr" }, post("api_wifi_qr")).leaf = true
 end
 
 local function run_json(cmd)
@@ -71,6 +80,88 @@ function api_captive()
 	run_json("/usr/sbin/tw-captive-check")
 end
 
+function api_wlan_disconnect()
+	run_json("/usr/sbin/tw-wan-disconnect")
+end
+
+function api_wifi_qr()
+	local net = http.formvalue("net") or ""
+	if net ~= "mgmt" and net ~= "vault" then
+		http.prepare_content("application/json")
+		http.write('{"error":"bad network"}')
+		return
+	end
+	run_json("/usr/sbin/tw-wifi-qr %s" % util.shellquote(net))
+end
+
+-- Saved upstream networks (SSID + metadata only; keys stay on the router).
+function api_wlan_saved()
+	local out = {}
+	uci:foreach("travelwizard", "savednet", function(s)
+		out[#out + 1] = { ssid = s.ssid, band = s.band,
+			last_used = tonumber(s.last_used) or 0 }
+	end)
+	table.sort(out, function(a, b) return a.last_used > b.last_used end)
+	http.prepare_content("application/json")
+	http.write_json({ saved = out })
+end
+
+-- One-tap reconnect to a saved network (key looked up server-side).
+-- The saved BSSID is deliberately not passed: hotels and airports run many
+-- access points under one name, and pinning the one seen last time would
+-- fail wherever that AP is out of range. The scan row may supply the band
+-- it saw the network on now; otherwise the saved band is used.
+function api_wlan_rejoin()
+	local ssid = http.formvalue("ssid") or ""
+	local band = http.formvalue("band") or ""
+	http.prepare_content("application/json")
+	if ssid == "" then
+		http.write('{"error":"missing ssid"}')
+		return
+	end
+	if band ~= "" and band ~= "2g" and band ~= "5g" then
+		http.write('{"error":"bad band"}')
+		return
+	end
+	local sec = nil
+	uci:foreach("travelwizard", "savednet", function(s)
+		if s.ssid == ssid then sec = s[".name"] end
+	end)
+	if sec == nil then
+		http.write('{"error":"unknown network"}')
+		return
+	end
+	if band == "" then band = uci:get("travelwizard", sec, "band") or "" end
+	run_json("/usr/sbin/tw-wan-join %s %s %s %s ''" % {
+		util.shellquote(ssid),
+		util.shellquote(uci:get("travelwizard", sec, "key") or ""),
+		util.shellquote(band),
+		util.shellquote(uci:get("travelwizard", sec, "enc") or "")
+	})
+end
+
+function api_wlan_forget()
+	local ssid = http.formvalue("ssid") or ""
+	http.prepare_content("application/json")
+	if ssid == "" then
+		http.write('{"error":"missing ssid"}')
+		return
+	end
+	local found = false
+	uci:foreach("travelwizard", "savednet", function(s)
+		if s.ssid == ssid then
+			uci:delete("travelwizard", s[".name"])
+			found = true
+		end
+	end)
+	if not found then
+		http.write('{"error":"unknown network"}')
+		return
+	end
+	uci:commit("travelwizard")
+	http.write_json({ forgotten = ssid })
+end
+
 function api_health()
 	run_json("/usr/sbin/tw-vpn-health")
 end
@@ -104,13 +195,112 @@ local function read_default_server(path)
 	return txt:match('"default"%s*:%s*"([^"]+)"')
 end
 
+-- Per-endpoint protocol details from a proxy config, keyed by tag:
+-- { type = "vless", transport = "ws"|nil, security = "reality"|"tls"|nil }.
+local function read_endpoint_protocols(path)
+	local out = {}
+	if path == nil or #path == 0 then return out end
+	local ok, jsonc = pcall(require, "luci.jsonc")
+	local conf = ok and jsonc.parse(nixio.fs.readfile(path) or "") or nil
+	if type(conf) ~= "table" or type(conf.outbounds) ~= "table" then return out end
+	for _, o in ipairs(conf.outbounds) do
+		if type(o) == "table" and type(o.tag) == "string" and type(o.server) == "string" then
+			local tls = type(o.tls) == "table" and o.tls.enabled and o.tls or nil
+			out[o.tag] = {
+				type = o.type,
+				transport = type(o.transport) == "table" and o.transport.type or nil,
+				security = tls and (type(tls.reality) == "table" and tls.reality.enabled
+					and "reality" or "tls") or nil
+			}
+		end
+	end
+	return out
+end
+
+-- Proxy-endpoint helpers (connect/test/refresh live outside the edit form).
+local function valid_profile_id(id)
+	return id ~= nil and id:match("^[%w_.-]+$") ~= nil
+end
+
+local function singbox_paths(id)
+	return "/etc/sing-box/tw-" .. id .. ".json",
+		"/etc/sing-box/tw-" .. id .. ".src",
+		"/etc/sing-box/tw-" .. id .. ".tags",
+		"/etc/sing-box/tw-" .. id .. ".map"
+end
+
+local function profile_tags(id)
+	local _, _, tags = singbox_paths(id)
+	local out = {}
+	local txt = nixio.fs.readfile(tags)
+	if txt ~= nil then
+		for line in txt:gmatch("[^\r\n]+") do
+			out[#out + 1] = line
+		end
+	end
+	return out
+end
+
+local function profile_default(id)
+	local conf = singbox_paths(id)
+	local tags = profile_tags(id)
+	return read_default_server(conf) or tags[1] or ""
+end
+
+local function run_import(src, path, default_tag)
+	local env = ""
+	if default_tag ~= nil and #default_tag > 0 then
+		env = "TW_DEFAULT_TAG=" .. util.shellquote(default_tag) .. " "
+	end
+	return util.exec(env .. "/usr/sbin/tw-sub-import - %s < %s" % {
+		util.shellquote(path), util.shellquote(src) })
+end
+
+-- Hand user input (subscription URLs carry access tokens) to the importer
+-- through a fresh private file: 0600, O_EXCL, unguessable name, so neither
+-- another local user nor a concurrent request can read or swap it.
+local function private_tmpfile(text)
+	for _ = 1, 5 do
+		local path = string.format("/tmp/tw-input.%d.%d",
+			nixio.getpid(), math.random(1, 999999999))
+		local f = nixio.open(path,
+			nixio.open_flags("wronly", "creat", "excl"), 600)
+		if f then
+			local ok = f:writeall(text)
+			f:close()
+			if ok then return path end
+			nixio.fs.unlink(path)
+		end
+	end
+	return nil
+end
+
+local function import_text(text, path, default_tag)
+	local tmp = private_tmpfile(text)
+	if tmp == nil then return '{"error":"could not stage the import"}' end
+	local out = run_import(tmp, path, default_tag)
+	nixio.fs.unlink(tmp)
+	return out
+end
+
+local function parse_json(out)
+	local ok, jsonc = pcall(require, "luci.jsonc")
+	if not ok then return nil end
+	return jsonc.parse(out or "")
+end
+
 -- One-time: fold the legacy single-config sections into profiles, keeping
 -- the effectively-active setup active. After this, profiles are the only
 -- source of truth (legacy vpn_mode is parked at off).
 local function migrate_legacy()
+	if uci:get("travelwizard", "main", "migrated") == "1" then return end
 	local has = false
 	uci:foreach("travelwizard", "profile", function() has = true end)
-	if has then return end
+	if has then
+		uci:set("travelwizard", "main", "migrated", "1")
+		uci:commit("travelwizard")
+		return
+	end
 	local n = 0
 	local function mkprof(ptype, name)
 		n = n + 1
@@ -148,7 +338,16 @@ local function migrate_legacy()
 	local sb_src = uci:get("travelwizard", "sb", "config_file")
 		or "/etc/sing-box/config.json"
 	local sb_sub = uci:get("travelwizard", "sb", "sub_url") or ""
-	if sb_sub ~= "" or has_file(sb_src) then
+	-- NOTE: a bare config file is not enough: the sing-box package ships
+	-- a stock /etc/sing-box/config.json, which must not conjure an empty
+	-- "Proxy" profile on every fresh install. Only migrate a subscription
+	-- or a config our own importer wrote (it always has a tun-in inbound).
+	local sb_mine = false
+	if has_file(sb_src) then
+		local txt = nixio.fs.readfile(sb_src) or ""
+		sb_mine = txt:find('"tun-in"', 1, true) ~= nil
+	end
+	if sb_sub ~= "" or sb_mine then
 		local id = mkprof("singbox", "Proxy")
 		local dst = "/etc/sing-box/tw-" .. id .. ".json"
 		if has_file(sb_src) then
@@ -158,13 +357,14 @@ local function migrate_legacy()
 		uci:set("travelwizard", id, "sub_url", sb_sub)
 		if legacy_mode == "singbox" then activate = id end
 	end
+	uci:set("travelwizard", "main", "migrated", "1")
 	if n > 0 then
 		if activate ~= nil then
 			uci:set("travelwizard", "main", "active_profile", activate)
 		end
 		uci:set("travelwizard", "main", "vpn_mode", "off")
-		uci:commit("travelwizard")
 	end
+	uci:commit("travelwizard")
 end
 
 function api_profiles()
@@ -193,6 +393,7 @@ function api_profiles()
 		elseif s.type == "singbox" then
 			p.sub_url = s.sub_url
 			p.has_config = has_file(s.config_file)
+			p.has_map = has_file(("/etc/sing-box/tw-" .. id .. ".map"))
 			p.servers = {}
 			if s.config_file ~= nil and #s.config_file > 0 then
 				-- parens: gsub's second return (count) would cap readfile's length
@@ -205,6 +406,7 @@ function api_profiles()
 				end
 			end
 			p.server = read_default_server(s.config_file) or p.servers[1]
+			p.protocols = read_endpoint_protocols(s.config_file)
 			p.summary = (#p.servers > 0)
 				and (#p.servers .. " servers")
 				or (p.has_config and "imported" or "empty")
@@ -233,6 +435,13 @@ function api_profile_save()
 	local name = http.formvalue("name") or ""
 	local ptype = http.formvalue("type") or ""
 	http.prepare_content("application/json")
+	-- Drop this request's pending (uncommitted) changes before answering
+	-- with an error, so a half-made profile never lingers in the session's
+	-- change set to be committed by some later, unrelated save.
+	local function fail(out, fallback)
+		uci:revert("travelwizard")
+		http.write(out and #out > 0 and out or fallback)
+	end
 	if #name < 1 or #name > 64 then
 		http.write('{"error":"name must be 1-64 characters"}')
 		return
@@ -279,58 +488,45 @@ function api_profile_save()
 		local links = http.formvalue("links") or ""
 		local server = http.formvalue("server") or ""
 		local input = sub ~= "" and sub or links
-		local path = "/etc/sing-box/tw-" .. id .. ".json"
-		local function run_import(src, default_tag)
-			local env = ""
-			if default_tag ~= nil and #default_tag > 0 then
-				env = "TW_DEFAULT_TAG=" .. util.shellquote(default_tag) .. " "
-			end
-			return util.exec(env .. "/usr/sbin/tw-sub-import - %s < %s" % {
-				util.shellquote(path), util.shellquote(src) })
-		end
+		local path, src = singbox_paths(id)
 		if input ~= "" then
-			local tmp = "/tmp/tw-import.txt"
-			nixio.fs.writefile(tmp, input)
-			local out = run_import(tmp, server)
-			nixio.fs.unlink(tmp)
+			local out = import_text(input, path, server)
 			if out == nil or out:find('"error"') ~= nil then
-				http.write(out and #out > 0 and out
-					or '{"error":"import failed"}')
+				fail(out, '{"error":"import failed"}')
 				return
 			end
 			uci:set("travelwizard", id, "config_file", path)
 			uci:set("travelwizard", id, "sub_url", sub)
 		elseif server ~= "" then
-			local src = "/etc/sing-box/tw-" .. id .. ".src"
 			if not has_file(src) then
-				http.write('{"error":"no subscription saved yet"}')
+				fail(nil, '{"error":"no subscription saved yet"}')
 				return
 			end
-			local tags = nixio.fs.readfile((src:gsub("%.src$", ".tags"))) or ""
 			local found = false
-			for line in tags:gmatch("[^\r\n]+") do
-				if line == server then found = true; break end
+			for _, t in ipairs(profile_tags(id)) do
+				if t == server then found = true; break end
 			end
 			if not found then
-				http.write('{"error":"unknown server"}')
+				fail(nil, '{"error":"unknown server"}')
 				return
 			end
-			local out = run_import(src, server)
+			local out = run_import(src, path, server)
 			if out == nil or out:find('"error"') ~= nil then
-				http.write(out and #out > 0 and out
-					or '{"error":"import failed"}')
+				fail(out, '{"error":"import failed"}')
 				return
 			end
 			uci:set("travelwizard", id, "config_file", path)
 		end
 	end
 	uci:commit("travelwizard")
-	if http.formvalue("use") == "1" then
+	-- Editing the profile that is already in use must take effect too,
+	-- not wait for the next reconnect.
+	local active = uci:get("travelwizard", "main", "active_profile") or ""
+	if http.formvalue("use") == "1" or active == id then
 		uci:set("travelwizard", "main", "active_profile", id)
 		uci:commit("travelwizard")
 		local out = util.exec("/usr/sbin/tw-vpn-apply")
-		local ok, jsonc = pcall(require, "luci.jsonc")
-		local res = ok and jsonc.parse(out or "") or nil
+		local res = parse_json(out)
 		if res ~= nil then
 			res.saved = id
 			http.write_json(res)
@@ -353,6 +549,7 @@ function api_profile_delete()
 	nixio.fs.unlink("/etc/sing-box/tw-" .. id .. ".json")
 	nixio.fs.unlink("/etc/sing-box/tw-" .. id .. ".src")
 	nixio.fs.unlink("/etc/sing-box/tw-" .. id .. ".tags")
+	nixio.fs.unlink("/etc/sing-box/tw-" .. id .. ".map")
 	uci:delete("travelwizard", id)
 	local was_active = uci:get("travelwizard", "main", "active_profile") == id
 	if was_active then
@@ -381,6 +578,120 @@ function api_profile_activate()
 	uci:commit("travelwizard")
 	local out = util.exec("/usr/sbin/tw-vpn-apply")
 	http.write(out and #out > 0 and out or '{"error":"apply failed"}')
+end
+
+-- Switch a proxy profile's active endpoint (connect, not edit). When the
+-- profile is the active one the tunnel is re-applied so the change is live.
+function api_profile_server()
+	local id = http.formvalue("id") or ""
+	local server = http.formvalue("server") or ""
+	http.prepare_content("application/json")
+	if not valid_profile_id(id)
+		or uci:get("travelwizard", id, "type") ~= "singbox" then
+		http.write('{"error":"unknown proxy profile"}')
+		return
+	end
+	local found = false
+	for _, t in ipairs(profile_tags(id)) do
+		if t == server then found = true; break end
+	end
+	if not found then
+		http.write('{"error":"unknown endpoint"}')
+		return
+	end
+	local path, src = singbox_paths(id)
+	if not has_file(src) then
+		http.write('{"error":"no subscription saved yet"}')
+		return
+	end
+	local out = run_import(src, path, server)
+	if out == nil or out:find('"error"') ~= nil then
+		http.write(out and #out > 0 and out or '{"error":"import failed"}')
+		return
+	end
+	uci:set("travelwizard", id, "config_file", path)
+	uci:commit("travelwizard")
+	local active = uci:get("travelwizard", "main", "active_profile") or ""
+	if active == id then
+		local res = parse_json(util.exec("/usr/sbin/tw-vpn-apply"))
+		if res ~= nil then
+			res.server = server
+			http.write_json(res)
+		else
+			http.write('{"error":"apply failed"}')
+		end
+	else
+		http.write_json({ saved = id, server = server })
+	end
+end
+
+-- Re-fetch a proxy profile's subscription (or re-import its saved links),
+-- keeping the current endpoint when it still exists. Re-applies when active.
+function api_profile_refresh()
+	local id = http.formvalue("id") or ""
+	http.prepare_content("application/json")
+	if not valid_profile_id(id)
+		or uci:get("travelwizard", id, "type") ~= "singbox" then
+		http.write('{"error":"unknown proxy profile"}')
+		return
+	end
+	local path, src = singbox_paths(id)
+	local sub = uci:get("travelwizard", id, "sub_url") or ""
+	local default = profile_default(id)
+	local out
+	if sub ~= "" then
+		out = import_text(sub, path, default)
+	elseif has_file(src) then
+		out = run_import(src, path, default)
+	else
+		http.write('{"error":"no subscription saved yet"}')
+		return
+	end
+	if out == nil or out:find('"error"') ~= nil then
+		http.write(out and #out > 0 and out or '{"error":"refresh failed"}')
+		return
+	end
+	uci:set("travelwizard", id, "config_file", path)
+	uci:commit("travelwizard")
+	local active = uci:get("travelwizard", "main", "active_profile") or ""
+	local imp = parse_json(out) or {}
+	if active == id then
+		local res = parse_json(util.exec("/usr/sbin/tw-vpn-apply"))
+		if res == nil then
+			http.write('{"error":"apply failed"}')
+			return
+		end
+		res.refreshed = id
+		res.count = imp.count
+		res.servers = imp.tags
+		http.write_json(res)
+	else
+		http.write_json({ refreshed = id, count = imp.count,
+			servers = imp.tags })
+	end
+end
+
+-- Full end-to-end latency probe of one endpoint (see tw-probe).
+function api_probe()
+	local id = http.formvalue("id") or ""
+	local server = http.formvalue("server") or ""
+	http.prepare_content("application/json")
+	if not valid_profile_id(id)
+		or uci:get("travelwizard", id, "type") ~= "singbox" then
+		http.write('{"error":"unknown proxy profile"}')
+		return
+	end
+	local found = false
+	for _, t in ipairs(profile_tags(id)) do
+		if t == server then found = true; break end
+	end
+	if not found then
+		http.write('{"error":"unknown endpoint"}')
+		return
+	end
+	local out = util.exec("/usr/sbin/tw-probe %s %s" % {
+		util.shellquote(id), util.shellquote(server) })
+	http.write(out and #out > 0 and out or '{"error":"probe failed"}')
 end
 
 function api_wifi_get()

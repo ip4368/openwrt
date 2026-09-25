@@ -13,7 +13,7 @@ IB="openwrt/imagebuilder:mediatek-filogic-$REL"
 # NOTE: wpad-basic-mbedtls is already the stock default; no -wpad-mini needed.
 # NOTE: the `luci` metapackage is required, not just luci-base — it pulls in
 # uhttpd (web server) and the default theme. Without it nothing listens on :80.
-PACKAGES="luci travelwizard luci-app-travelwizard wpad-basic-mbedtls iwinfo wireguard-tools luci-proto-wireguard openvpn-openssl luci-app-openvpn sing-box pbr curl ca-bundle jsonfilter coreutils-base64"
+PACKAGES="luci travelwizard luci-app-travelwizard wpad-basic-mbedtls iwinfo iw wireguard-tools luci-proto-wireguard openvpn-openssl luci-app-openvpn sing-box pbr curl ca-bundle jsonfilter coreutils-base64 coreutils-timeout qrencode"
 
 mkdir -p "$OUT/ipk" "$OUT/image"
 docker run --rm --platform linux/amd64 \

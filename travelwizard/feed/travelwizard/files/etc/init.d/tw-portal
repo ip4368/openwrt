@@ -1,0 +1,11 @@
+#!/bin/sh /etc/rc.common
+# Recompute the setup portal late in boot, when the link state is final.
+START=99
+
+boot() {
+	/usr/sbin/tw-portal auto >/dev/null 2>&1
+}
+
+start() {
+	/usr/sbin/tw-portal auto >/dev/null 2>&1
+}

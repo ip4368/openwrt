@@ -204,6 +204,25 @@ json_add_string vpn_interface "$VPN_IF"
 json_add_string vault_net "$VAULT_NET"
 json_add_string vault_dns "$(uci -q get dhcp.vault.dhcp_option)"
 [ "$PBR" = "true" ] && json_add_boolean pbr 1 || json_add_boolean pbr 0
-[ "$PBR" != "true" ] && json_add_string warning "pbr not installed: vault routing inactive until pbr is installed"
+WARN=""
+[ "$PBR" != "true" ] && WARN="pbr not installed: vault routing inactive until pbr is installed"
+# Self-check: the tunnel device is up but no default route via it exists
+# in any table, so the vault has no path even though the tunnel is fine
+# (pbr policy inactive or still converging — retry a few times first).
+TUNDEV=""
+case "$MODE" in
+	wireguard) TUNDEV="tw_wg" ;;
+	openvpn) TUNDEV="tun_tw" ;;
+	singbox) TUNDEV="tun0" ;;
+esac
+if [ -n "$TUNDEV" ] && ip link show "$TUNDEV" >/dev/null 2>&1; then
+	n=0
+	while ! tw_tunnel_routed "$TUNDEV" && [ "$n" -lt 4 ]; do
+		sleep 2; n=$((n + 1))
+	done
+	tw_tunnel_routed "$TUNDEV" || \
+		WARN="${WARN:+$WARN; }no route via $TUNDEV (vault has no path; check pbr)"
+fi
+[ -n "$WARN" ] && json_add_string warning "$WARN"
 tw_kill_holding && json_add_boolean kill_holding 1 || json_add_boolean kill_holding 0
 json_dump

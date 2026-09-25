@@ -60,11 +60,13 @@ esac
 DIRECT_IP=$(curl -s --max-time 8 ${WAN_DEV:+--interface "$WAN_DEV"} \
 	https://api.ipify.org 2>/dev/null)
 VPN_IP=""
-TW_PROBE_DST=""
+TW_PROBE_DST=""; DNS_PINNED=""
 cleanup_probe() {
 	[ -n "$TW_PROBE_DST" ] && [ -n "$VPN_DEV" ] \
 		&& ip route del "$TW_PROBE_DST/32" dev "$VPN_DEV" 2>/dev/null
-	TW_PROBE_DST=""
+	[ -n "$DNS_PINNED" ] && [ -n "$VPN_DEV" ] \
+		&& ip route del "$DNS_PINNED/32" dev "$VPN_DEV" 2>/dev/null
+	TW_PROBE_DST=""; DNS_PINNED=""
 }
 trap cleanup_probe EXIT
 if [ "$MODE" != "off" ] && [ "$TUN_UP" = "true" ] && [ -n "$VPN_DEV" ]; then
@@ -75,6 +77,36 @@ if [ "$MODE" != "off" ] && [ "$TUN_UP" = "true" ] && [ -n "$VPN_DEV" ]; then
 			--resolve "api.ipify.org:443:$TW_PROBE_DST" \
 			https://api.ipify.org 2>/dev/null)
 		cleanup_probe
+	fi
+fi
+
+# Vault DNS through the tunnel: vault clients query public resolvers
+# directly (DHCP option 6), so resolve a probe name through the first of
+# them with its traffic pinned into the tunnel device, exactly as a
+# vault client's query would travel.
+VAULT_DNS_LIST=$(uci -q get dhcp.vault.dhcp_option 2>/dev/null | tr ',' '\n' \
+	| grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | tr '\n' ' ' | sed 's/ $//')
+DNS_IP=${VAULT_DNS_LIST%% *}
+DNS_OK="false"; DNS_DETAIL="not tested"
+if [ "$MODE" != "off" ] && [ "$TUN_UP" = "true" ] && [ -n "$VPN_DEV" ]; then
+	if [ -z "$DNS_IP" ]; then
+		DNS_DETAIL="no vault DNS configured"
+	elif ip route add "$DNS_IP/32" dev "$VPN_DEV" 2>/dev/null; then
+		DNS_PINNED="$DNS_IP"
+		if command -v timeout >/dev/null 2>&1; then
+			DNS_ANS=$(timeout 8 nslookup example.com "$DNS_IP" 2>/dev/null | tw_ns_answer)
+		else
+			DNS_ANS=$(nslookup example.com "$DNS_IP" 2>/dev/null | tw_ns_answer)
+		fi
+		ip route del "$DNS_IP/32" dev "$VPN_DEV" 2>/dev/null
+		DNS_PINNED=""
+		if [ -n "$DNS_ANS" ]; then
+			DNS_OK="true"; DNS_DETAIL="$DNS_ANS"
+		else
+			DNS_DETAIL="query via $DNS_IP failed"
+		fi
+	else
+		DNS_DETAIL="could not pin route"
 	fi
 fi
 
@@ -112,6 +144,9 @@ json_add_string mode "$MODE"
 json_add_string tunnel_detail "$TUN_DETAIL"
 json_add_string direct_ip "$DIRECT_IP"
 json_add_string vault_ip "$VPN_IP"
+json_add_string vault_dns "$VAULT_DNS_LIST"
+[ "$DNS_OK" = "true" ] && json_add_boolean dns_ok 1 || json_add_boolean dns_ok 0
+json_add_string dns_detail "$DNS_DETAIL"
 [ "$LEAK" = "true" ] && json_add_boolean leak 1 || json_add_boolean leak 0
 [ "$KILL_HOLD" = "true" ] && json_add_boolean kill_holding 1 || json_add_boolean kill_holding 0
 json_add_string verdict "$VERDICT"

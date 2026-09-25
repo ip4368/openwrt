@@ -1,0 +1,47 @@
+#!/bin/sh
+# Print a scannable Wi-Fi QR code (SVG, wrapped in JSON) for a local AP net.
+# Usage: tw-wifi-qr mgmt|vault
+. "${TW_JSHN:-/usr/share/libubox/jshn.sh}"
+
+case "$1" in
+	mgmt) UPLINK="lan"; PRE="mgmt" ;;
+	vault) UPLINK="vault"; PRE="vault" ;;
+	*) echo '{"error":"bad network"}'; exit 1 ;;
+esac
+
+# Live values from the AP sections (first match), like api_wifi_get; fall
+# back to the stored wizard values when no AP section matches.
+SSID=""; KEY=""; ENC=""
+for s in $(uci show wireless 2>/dev/null | sed -n 's/^wireless\.\([^.]*\)=wifi-iface/\1/p'); do
+	[ "$(uci -q get "wireless.$s.mode")" = "ap" ] || continue
+	[ "$(uci -q get "wireless.$s.network")" = "$UPLINK" ] || continue
+	SSID=$(uci -q get "wireless.$s.ssid")
+	KEY=$(uci -q get "wireless.$s.key")
+	ENC=$(uci -q get "wireless.$s.encryption")
+	break
+done
+[ -n "$SSID" ] || SSID=$(uci -q get "travelwizard.main.${PRE}_ssid")
+[ -n "$KEY" ] || KEY=$(uci -q get "travelwizard.main.${PRE}_key")
+[ -n "$SSID" ] || { echo '{"error":"unknown network"}'; exit 1; }
+
+case "$ENC" in ""|none|NONE) AUTH="nopass" ;; *) AUTH="WPA" ;; esac
+
+# WIFI: URI escaping: backslash \ ; , : and " (backslash first).
+qr_esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/;/\\;/g; s/,/\\,/g; s/:/\\:/g; s/"/\\"/g'; }
+
+if [ "$AUTH" = "nopass" ]; then
+	URI="WIFI:T:nopass;S:$(qr_esc "$SSID");;"
+else
+	URI="WIFI:T:WPA;S:$(qr_esc "$SSID");P:$(qr_esc "$KEY");;"
+fi
+
+command -v qrencode >/dev/null 2>&1 \
+	|| { echo '{"error":"qrencode not installed"}'; exit 1; }
+SVG=$(qrencode -t SVG -m 1 -o - "$URI" 2>/dev/null) \
+	|| { echo '{"error":"qr failed"}'; exit 1; }
+[ -n "$SVG" ] || { echo '{"error":"qr failed"}'; exit 1; }
+
+json_init
+json_add_string net "$1"
+json_add_string svg "$SVG"
+json_dump

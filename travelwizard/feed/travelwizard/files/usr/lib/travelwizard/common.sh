@@ -50,6 +50,8 @@ tw_band_of_channel() {
 tw_uci_encryption() {
 	case "$1" in
 		""|none|NONE|unknown|UNKNOWN) echo "none" ;;
+		# already a uci value (saved from a live wwan config)
+		psk|psk2|psk-mixed|sae|sae-mixed|owe|wep-open|wep-shared) echo "$1" ;;
 		*802.1x*|*8021x*|*EAP*) echo "eap" ;;
 		*WEP*|*Wep*) echo "wep-open" ;;
 		*SAE*|*Sae*)
@@ -84,6 +86,117 @@ tw_scan_ifs() {
 		seen="$seen $phy"
 		echo "$if"
 	done
+}
+
+# Convert `iw <iface> scan dump` (kernel scan cache) to iwinfo-like Cell
+# blocks on stdin, so the normal scan parser consumes both sources. Channel
+# comes from freq (iw's channel lines vary); encryption keywords match what
+# tw_uci_encryption expects. iw escapes SSID bytes that are not printable
+# ASCII (so every UTF-8 name), a backslash, and edge spaces as \xHH; those
+# are decoded back to the raw bytes, as iwinfo would print them.
+# Usage: iw .. scan dump | tw_scan_dump_conv
+tw_scan_dump_conv() {
+	local out
+	out=$(awk '
+	# \xHH -> \0ooo, which printf %b turns into the byte in any shell (awk
+	# itself would re-encode values over 127 as UTF-8 in a UTF-8 locale).
+	function unesc(s,   out, h, v) {
+		out = ""
+		while (match(s, /\\x[0-9a-fA-F][0-9a-fA-F]/)) {
+			h = tolower(substr(s, RSTART + 2, 2))
+			v = (index("0123456789abcdef", substr(h, 1, 1)) - 1) * 16 \
+				+ index("0123456789abcdef", substr(h, 2, 1)) - 1
+			out = out substr(s, 1, RSTART - 1) (v ? sprintf("\\0%03o", v) : "")
+			s = substr(s, RSTART + RLENGTH)
+		}
+		return out s
+	}
+	function emit() {
+		if (bssid == "") return
+		n++
+		if (essid == "") essid = "(hidden) " bssid
+		f = int(freq)
+		if (f >= 2412 && f <= 2472) chan = int((f - 2407) / 5)
+		else if (f == 2484) chan = 14
+		else if (f >= 5000 && f < 6000) chan = int((f - 5000) / 5)
+		else if (f >= 6000) chan = 999
+		else chan = ""
+		if (!privacy) enc = "none"
+		else if (eap) enc = "WPA2-EAP"
+		else if (rsn && sae && psk) enc = "WPA2 PSK+SAE"
+		else if (rsn && sae) enc = "SAE"
+		else if (rsn) enc = "WPA2 PSK"
+		else if (wpa) enc = "WPA PSK"
+		else enc = "WEP"
+		printf "Cell %02d - Address: %s\n", n, bssid
+		printf "\t  ESSID: \"%s\"\n", essid
+		printf "\t  Mode: Master  Channel: %s\n", chan
+		printf "\t  Signal: %d dBm\n", sig
+		printf "\t  Encryption: %s\n", enc
+	}
+	/^BSS / {
+		emit()
+		bssid = $2; sub(/\(.*/, "", bssid)
+		essid = ""; sig = -999; freq = 0
+		privacy = 0; rsn = 0; wpa = 0; sae = 0; psk = 0; eap = 0
+		next
+	}
+	/^[ \t]+SSID: / { line = $0; sub(/^[^:]*: /, "", line); essid = unesc(line); next }
+	/^[ \t]+freq: / { freq = $2; next }
+	/^[ \t]+signal: / { sig = int($2); next }
+	/capability: .*0x[0-9a-fA-F]+/ {
+		# bit 4 (0x10) is Privacy: the hex digit in the 16s place is odd
+		if (match($0, /0x[0-9a-fA-F]+/)) {
+			hex = substr($0, RSTART + 2, RLENGTH - 2)
+			if (substr(hex, length(hex) - 1, 1) ~ /[13579bdfBDF]/)
+				privacy = 1
+		}
+		next
+	}
+	/^[ \t]+RSN:/ { rsn = 1; next }
+	/^[ \t]+WPA:/ { wpa = 1; next }
+	/Authentication suites:/ {
+		if ($0 ~ /SAE/) sae = 1
+		if ($0 ~ /PSK/) psk = 1
+		if ($0 ~ /802\.1X/) eap = 1
+		next
+	}
+	END { emit() }
+	')
+	# only ESSIDs can hold a backslash: iw never prints one unescaped
+	[ -n "$out" ] && printf '%b\n' "$out"
+}
+
+# Scan one interface: trigger fresh scans (retried: while the sta is
+# connected, wpa_supplicant's background scans briefly hold the radio and a
+# single attempt can come back empty), then fall back to the kernel scan
+# cache — fresh in exactly that case, since a refused trigger means someone
+# is actively scanning. Prints Cell blocks; fails only when both fail.
+# Usage: tw_scan_one <iface> [iwinfo_bin] [iw_bin]
+tw_scan_one() {
+	local iface="$1" iwinfo_bin="${2:-iwinfo}" iw_bin="${3:-iw}"
+	local tries="${TW_SCAN_RETRIES:-3}" sleep_s="${TW_SCAN_SLEEP:-3}"
+	local n=1 out
+	while [ "$n" -le "$tries" ]; do
+		out=$("$iwinfo_bin" "$iface" scan 2>/dev/null)
+		case "$out" in
+			*Cell*) printf '%s\n' "$out"; return 0 ;;
+		esac
+		n=$((n + 1))
+		[ "$n" -le "$tries" ] || break
+		sleep "$sleep_s"
+		# The scan that refused ours has usually finished by now: take
+		# its results instead of paying for another full scan.
+		out=$("$iw_bin" "$iface" scan dump 2>/dev/null | tw_scan_dump_conv)
+		case "$out" in
+			*Cell*) printf '%s\n' "$out"; return 0 ;;
+		esac
+	done
+	out=$("$iw_bin" "$iface" scan dump 2>/dev/null | tw_scan_dump_conv)
+	case "$out" in
+		*Cell*) printf '%s\n' "$out"; return 0 ;;
+	esac
+	return 1
 }
 
 # True when the vault kill-switch is intact: the vault zone's forward
@@ -170,6 +283,103 @@ tw_resolve_ipv4() {
 	nslookup "$1" 2>/dev/null | awk '
 		$1 == "Address:" && $2 !~ /:/ && $2 !~ /^127\./ { print $2; exit }
 		$1 == "Address" && $3 !~ /:/ && $3 !~ /^127\./ { print $3; exit }'
+}
+
+# Print the first answer address from nslookup output on stdin, or nothing.
+# Unlike tw_resolve_ipv4 this is safe with an explicit (non-loopback) server:
+# only addresses after a "Name:" line count, so the "Server:"/"Address: #53"
+# lines are never mistaken for answers. Handles bind and busybox formats.
+tw_ns_answer() {
+	awk '
+		$1 == "Name:" { want = 1; next }
+		want && $1 == "Address:" && $2 !~ /:/ && $2 !~ /#/ && $2 !~ /^127\./ { print $2; exit }
+		want && $1 == "Address" && $3 !~ /:/ && $3 !~ /#/ && $3 !~ /^127\./ { print $3; exit }'
+}
+
+# Print the oldest savednet section name (by last_used), or nothing.
+_tw_saved_oldest() {
+	local s ts best="" best_ts=""
+	for s in $(uci show travelwizard 2>/dev/null \
+		| sed -n 's/^travelwizard\.\([^.]*\)=savednet/\1/p'); do
+		ts=$(uci -q get "travelwizard.$s.last_used")
+		case "$ts" in ''|*[!0-9]*) ts=0 ;; esac
+		if [ -z "$best" ] || [ "$ts" -lt "$best_ts" ]; then
+			best="$s"; best_ts="$ts"
+		fi
+	done
+	[ -n "$best" ] && echo "$best"
+}
+
+# Remember a successfully joined upstream network for one-tap reconnect.
+# Updates the entry when the SSID is already known, else adds one (capped
+# at 16 entries, oldest first out). Silent; the caller commits.
+tw_saved_upsert() {
+	local ssid="$1" key="$2" band="$3" enc="$4" bssid="$5"
+	local s sec="" count=0 oldest now
+	[ -n "$ssid" ] || return 1
+	now=$(date +%s)
+	for s in $(uci show travelwizard 2>/dev/null \
+		| sed -n 's/^travelwizard\.\([^.]*\)=savednet/\1/p'); do
+		count=$((count + 1))
+		if [ "$(uci -q get "travelwizard.$s.ssid")" = "$ssid" ]; then
+			sec="$s"
+		fi
+	done
+	if [ -z "$sec" ]; then
+		while [ "$count" -ge 16 ]; do
+			oldest=$(_tw_saved_oldest)
+			[ -n "$oldest" ] || break
+			uci -q delete "travelwizard.$oldest"
+			count=$((count - 1))
+		done
+		sec=$(uci add travelwizard savednet)
+		[ -n "$sec" ] || return 1
+	fi
+	uci set "travelwizard.$sec.ssid=$ssid"
+	uci set "travelwizard.$sec.key=$key"
+	uci set "travelwizard.$sec.band=$band"
+	uci set "travelwizard.$sec.enc=$enc"
+	uci set "travelwizard.$sec.bssid=$bssid"
+	uci set "travelwizard.$sec.last_used=$now"
+	return 0
+}
+
+# Remember the network the Wi-Fi uplink is configured for; run when wwan
+# comes up. tw-wan-join saves it as well, but its request can be torn down
+# before it gets there: the browser's device drops off this router's Wi-Fi
+# while the radio retunes to the upstream channel. Known SSIDs keep their
+# scan-derived settings and only take the key that just worked and a fresh
+# timestamp. Silent; the caller commits.
+tw_saved_record_wwan() {
+	local ssid key enc radio s sec=""
+	ssid=$(uci -q get wireless.wwan.ssid)
+	[ -n "$ssid" ] || return 1
+	key=$(uci -q get wireless.wwan.key)
+	for s in $(uci show travelwizard 2>/dev/null \
+		| sed -n 's/^travelwizard\.\([^.]*\)=savednet/\1/p'); do
+		[ "$(uci -q get "travelwizard.$s.ssid")" = "$ssid" ] && sec="$s"
+	done
+	if [ -n "$sec" ]; then
+		uci set "travelwizard.$sec.key=$key"
+		uci set "travelwizard.$sec.last_used=$(date +%s)"
+		return 0
+	fi
+	enc=$(uci -q get wireless.wwan.encryption)
+	radio=$(uci -q get wireless.wwan.device)
+	tw_saved_upsert "$ssid" "$key" "$(uci -q get "wireless.$radio.band")" "${enc:-none}" ""
+}
+
+# True when a default route via the given device exists in some table.
+# Used after tw-vpn-apply to confirm pbr actually installed the vault
+# policy (a bare connected route does not count: those exist even with
+# no policy routing at all).
+tw_tunnel_routed() {
+	ip route show table all 2>/dev/null | awk -v dev="$1" '
+		$1 == "default" {
+			for (i = 1; i <= NF; i++)
+				if ($i == "dev" && $(i + 1) == dev) { found = 1; exit }
+		}
+		END { exit !found }'
 }
 
 # Print the l3 device of an interface, e.g. "phy0-ap0" / "eth1".
