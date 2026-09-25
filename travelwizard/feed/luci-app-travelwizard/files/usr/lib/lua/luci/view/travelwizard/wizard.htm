@@ -1,528 +1,1818 @@
-<%+header%>
-<h2 name="content"><%:Setup Wizard%></h2>
-<p><%:Three steps to get online: join Wi-Fi, pass the hotel login page, then turn on the VPN for your private network.%></p>
+<!DOCTYPE html>
+<!-- TravelWizard app: a standalone page (no LuCI chrome) behind LuCI auth.
+     Overview shows what is ready plus the one next step; the Internet,
+     Privacy and Wi-Fi tabs hold the settings. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="format-detection" content="telephone=no">
+<title><%:Travel Router%></title>
+<style>
+:root{
+	--ink:#172235;--muted:#657188;--faint:#98a3b5;--line:#dfe5ee;--bg:#f4f7fb;--card:#fff;
+	--brand:#3157d5;--brand-d:#2444b2;--brand-t:#e8edff;
+	--good:#16845b;--good-t:#e9f8f1;--warn:#a76608;--warn-t:#fff5df;
+	--bad:#c33e48;--bad-t:#fff0f1;
+	--shadow:0 12px 35px rgba(24,37,63,.08);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+[hidden]{display:none!important}
+body{min-height:100vh;background:var(--bg);color:var(--ink);
+font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+-webkit-text-size-adjust:100%}
+/* top bar */
+.tw-topbar{height:68px;padding:0 max(18px,calc((100vw - 1180px)/2));display:flex;
+align-items:center;justify-content:space-between;gap:18px;background:rgba(255,255,255,.96);
+border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;backdrop-filter:blur(12px)}
+.tw-brand{display:flex;align-items:center;gap:11px;min-width:0}
+.tw-brand-mark{width:38px;height:38px;border-radius:12px;flex:none;
+background:linear-gradient(145deg,#466be6,#263fa6);color:#fff;display:grid;place-items:center;
+font-weight:800;font-size:13px;box-shadow:0 7px 18px rgba(49,87,213,.24)}
+.tw-brand strong{display:block;font-size:16px;line-height:1.15}
+.tw-brand small{display:block;color:var(--muted);font-size:12px;margin-top:2px}
+/* page + tabs */
+.tw-shell{max-width:1180px;margin:0 auto;padding:30px 24px 60px}
+.tw-intro{margin-bottom:22px}
+.tw-intro h1{font-size:30px;letter-spacing:-.04em;margin:0 0 5px}
+.tw-intro p{margin:0;color:var(--muted)}
+.tw-nav{display:flex;gap:7px;padding:5px;background:#e9edf5;border-radius:14px;margin-bottom:24px;
+overflow-x:auto;scrollbar-width:none}
+.tw-nav::-webkit-scrollbar{display:none}
+.tw-nav button{appearance:none;border:0;background:transparent;color:#59677d;border-radius:10px;
+padding:10px 16px;white-space:nowrap;font:inherit;font-weight:700;cursor:pointer;display:flex;
+align-items:center;gap:8px}
+.tw-nav button:hover{color:var(--ink)}
+.tw-nav button[aria-selected=true]{background:#fff;color:var(--brand);box-shadow:0 2px 9px rgba(24,37,63,.1)}
+.tw-dot{width:8px;height:8px;border-radius:50%;background:#9aa5b6;display:inline-block;flex:none}
+.is-good .tw-dot{background:var(--good)}
+.is-warn .tw-dot{background:var(--warn)}
+.is-bad .tw-dot{background:var(--bad)}
+.tw-panel.is-entering{animation:tw-enter .28s cubic-bezier(.2,.8,.2,1)}
+.tw-section-title{margin:4px 0 16px}
+.tw-section-title h2{font-size:24px;margin:0 0 4px}
+.tw-section-title p{margin:0;color:var(--muted)}
+/* grid + cards */
+.tw-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:18px}
+.tw-col-4{grid-column:span 4}.tw-col-5{grid-column:span 5}.tw-col-7{grid-column:span 7}
+.tw-col-8{grid-column:span 8}.tw-col-12{grid-column:1/-1}
+.tw-card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;
+box-shadow:0 2px 4px rgba(24,37,63,.025)}
+.tw-card.tw-lift{box-shadow:var(--shadow)}
+.tw-card h2{font-size:20px;margin:0 0 5px;letter-spacing:-.02em}
+.tw-card h3{font-size:16px;margin:0}
+.tw-card p{color:var(--muted);margin:5px 0 16px}
+.tw-card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:15px;margin-bottom:17px}
+.tw-card-header p{margin-bottom:0}
+[id^="card-"]{scroll-margin-top:90px}
+.tw-card.tw-focus{animation:tw-focus 1.25s ease-out}
+/* overview: next step, status tiles, hero */
+.tw-next{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:17px;
+background:linear-gradient(135deg,#fff,#f8faff);border:1px solid #d9e1f0;border-radius:20px;
+padding:19px 20px;margin-bottom:18px;box-shadow:var(--shadow)}
+.tw-next-icon{width:52px;height:52px;border-radius:16px;background:var(--brand-t);color:var(--brand);
+display:grid;place-items:center;font-size:25px;font-weight:800}
+.tw-next.is-good .tw-next-icon{background:var(--good-t);color:var(--good)}
+.tw-next.is-warn .tw-next-icon{background:var(--warn-t);color:var(--warn)}
+.tw-next.is-bad .tw-next-icon{background:var(--bad-t);color:var(--bad)}
+.tw-next-copy{min-width:0}
+.tw-next-copy small{display:block;color:var(--brand);font-size:11px;font-weight:800;
+letter-spacing:.08em;text-transform:uppercase;margin-bottom:2px}
+.tw-next-copy h2{font-size:20px;line-height:1.2;margin:0}
+.tw-next-copy p{margin:3px 0 0;color:var(--muted)}
+.tw-status-tile{appearance:none;text-align:left;width:100%;cursor:pointer;color:inherit;font:inherit;
+transition:transform .16s,box-shadow .16s}
+.tw-status-tile:hover{transform:translateY(-2px);box-shadow:var(--shadow)}
+.tw-status-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+.tw-icon{width:42px;height:42px;border-radius:13px;background:#eef1f7;display:grid;place-items:center;
+font-size:20px;flex:none}
+.tw-state{font-size:12px;border-radius:99px;padding:5px 9px;background:#eef1f5;color:var(--muted);
+font-weight:800;white-space:nowrap}
+.is-good>.tw-state,.is-good .tw-status-top .tw-state,.tw-state.is-good{background:var(--good-t);color:var(--good)}
+.is-warn>.tw-state,.is-warn .tw-status-top .tw-state,.tw-state.is-warn{background:var(--warn-t);color:var(--warn)}
+.is-bad>.tw-state,.is-bad .tw-status-top .tw-state,.tw-state.is-bad{background:var(--bad-t);color:var(--bad)}
+.tw-status-main{display:block;font-size:18px;font-weight:800;white-space:nowrap;overflow:hidden;
+text-overflow:ellipsis}
+.tw-status-sub{display:block;color:var(--muted);font-size:13px;margin-top:4px}
+.tw-arrow{float:right;color:var(--faint)}
+.tw-hero{background:linear-gradient(135deg,#203b91,#3157d5 62%,#5375e4);color:#fff;border:0;
+position:relative;overflow:hidden}
+.tw-hero:after{content:"";position:absolute;width:240px;height:240px;border-radius:50%;right:-80px;
+top:-110px;background:rgba(255,255,255,.09)}
+.tw-hero h2{font-size:24px}
+.tw-hero p{color:#dfe6ff;max-width:590px}
+.tw-network-pills{display:flex;flex-wrap:wrap;gap:10px;position:relative;z-index:1}
+.tw-network-pill{background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.2);
+border-radius:12px;padding:10px 13px}
+.tw-network-pill small{display:block;color:#cdd7ff}
+.tw-network-pill strong{font-size:15px}
+.tw-hero .tw-hero-warn{position:relative;z-index:1;margin:14px 0 0;color:#fff;font-weight:700}
+/* layout helpers */
+.tw-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.tw-between{justify-content:space-between}
+.tw-stack{display:grid;gap:13px}
+.tw-mt{margin-top:14px}
+.tw-muted{color:var(--muted)}
+/* forms */
+.tw-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.tw-field{display:grid;gap:6px;align-content:start}
+.tw-field.tw-wide{grid-column:1/-1}
+.tw-field label{font-size:13px;font-weight:750;color:#445168}
+.tw-field input,.tw-field select,.tw-field textarea{width:100%;min-height:43px;border:1px solid #cfd7e3;
+border-radius:10px;background:#fff;padding:9px 11px;color:var(--ink);font:inherit}
+.tw-field textarea{resize:vertical;min-height:100px}
+.tw-field input:focus,.tw-field select:focus,.tw-field textarea:focus{outline:3px solid rgba(49,87,213,.13);
+border-color:var(--brand)}
+.tw-secret{position:relative}
+.tw-secret input{padding-right:68px}
+.tw-secret-toggle{appearance:none;position:absolute;right:5px;top:5px;bottom:5px;min-width:56px;border:0;
+border-radius:7px;background:#eef1f6;color:#445168;font:inherit;font-size:12px;font-weight:800;cursor:pointer}
+.tw-secret-toggle:hover{background:#e2e7ef;color:var(--ink)}
+.tw-secret-toggle:focus-visible{outline:3px solid rgba(49,87,213,.2)}
+/* buttons */
+.tw-button{appearance:none;border:1px solid #cfd7e3;background:#fff;color:#354258;border-radius:10px;
+min-height:40px;padding:8px 13px;font:inherit;font-size:14px;font-weight:700;line-height:1.2;
+cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;
+gap:7px;touch-action:manipulation;white-space:nowrap}
+.tw-button:hover{border-color:#aeb9c8;background:#f8f9fc}
+.tw-button:disabled{opacity:.55;cursor:default}
+.tw-button-primary{background:var(--brand);color:#fff;border-color:var(--brand)}
+.tw-button-primary:hover{background:var(--brand-d);border-color:var(--brand-d)}
+.tw-button-danger{color:var(--bad)}
+.tw-button-danger.armed{background:var(--bad);border-color:var(--bad);color:#fff}
+.tw-button-small{min-height:34px;padding:6px 10px;font-size:13px}
+.tw-button.loading{pointer-events:none}
+.tw-button.loading::after{content:"";display:inline-block;width:1em;height:1em;border-radius:50%;
+border:2px solid rgba(128,128,128,.4);border-top-color:currentColor;animation:tw-spin .7s linear infinite}
+.tw-choice{display:flex;gap:5px;background:#eef1f6;padding:4px;border-radius:11px;width:max-content;max-width:100%}
+.tw-choice button{appearance:none;border:0;background:transparent;border-radius:8px;padding:8px 13px;
+color:var(--muted);font:inherit;font-weight:750;cursor:pointer}
+.tw-choice button.is-active{background:#fff;color:var(--brand);box-shadow:0 2px 7px rgba(24,37,63,.09)}
+/* callouts + messages */
+.tw-callout{border-radius:13px;padding:13px 15px;background:#f4f6fa;color:#4c5970}
+.tw-callout strong{color:var(--ink)}
+.tw-callout.is-good{background:var(--good-t);color:#176a4c}
+.tw-callout.is-warn{background:var(--warn-t);color:#835612}
+.tw-callout.is-bad{background:var(--bad-t);color:#9c3139}
+.tw-message{min-height:20px;font-size:13px;margin:10px 0 0}
+.tw-good{color:var(--good);font-weight:750}
+.tw-warn{color:var(--warn);font-weight:750}
+.tw-bad{color:var(--bad);font-weight:750}
+ol.tw-steps{margin:12px 0 0;padding-left:1.4em;display:grid;gap:.45em;color:#4c5970}
+details.tw-tech{margin-top:10px}
+details.tw-tech summary{cursor:pointer;color:var(--muted);font-size:13px;min-height:34px;
+display:flex;align-items:center}
+details.tw-tech p{font-size:13px;margin:4px 0 0}
+/* lists: networks, profiles, endpoints */
+.tw-network-list,.tw-profile-list,.tw-endpoints{display:grid;gap:9px}
+.tw-network,.tw-profile,.tw-endpoint{border:1px solid var(--line);border-radius:13px;padding:13px;
+display:flex;align-items:center;justify-content:space-between;gap:12px}
+.tw-network.is-active,.tw-profile.is-active,.tw-endpoint.is-active{border-color:#8bd2b8;background:#f1fbf6}
+.tw-network.is-picked{border-color:var(--brand);background:#f0f4ff}
+.tw-network-meta,.tw-profile-meta,.tw-endpoint-meta{min-width:0}
+.tw-network-meta strong,.tw-profile-meta strong,.tw-endpoint-meta strong{display:block;overflow:hidden;
+text-overflow:ellipsis;overflow-wrap:anywhere}
+.tw-network-meta small,.tw-profile-meta small,.tw-endpoint-meta small{display:block;color:var(--muted);
+margin-top:2px}
+.tw-signal{color:var(--muted);font-size:13px;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
+.tw-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.tw-current-network{display:flex;align-items:center;gap:13px;border:1px solid var(--line);border-radius:14px;
+padding:14px;background:#f7f9fc}
+.tw-current-network.is-connected{border-color:#8bd2b8;background:var(--good-t)}
+.tw-current-copy{min-width:0;flex:1}
+.tw-current-copy strong{display:block;font-size:16px;overflow:hidden;text-overflow:ellipsis}
+.tw-current-copy small{display:block;color:var(--muted);margin-top:2px}
+.tw-list-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:20px 0 9px}
+.tw-list-heading small{color:var(--muted);text-align:right}
+.tw-empty{border:1px dashed #cad3df;border-radius:13px;padding:26px;text-align:center;color:var(--muted)}
+.tw-edit{margin-top:16px;border-top:1px solid var(--line);padding-top:18px}
+.tw-join{border:1px solid var(--brand);border-radius:13px;background:#f0f4ff;padding:14px}
+.tw-join .tw-field{max-width:30em}
+/* subscriptions */
+.tw-sub-list{display:grid;gap:12px}
+.tw-sub-group{border:1px solid var(--line);border-radius:15px;background:#fff;overflow:hidden}
+.tw-sub-group summary{list-style:none;padding:16px;cursor:pointer;display:flex;align-items:center;
+justify-content:space-between;gap:12px}
+.tw-sub-group summary::-webkit-details-marker{display:none}
+.tw-sub-title{min-width:0}
+.tw-sub-title strong{display:block;font-size:15px}
+.tw-sub-title small{display:block;color:var(--muted);margin-top:2px}
+.tw-sub-chevron{color:var(--muted);transition:transform .15s}
+.tw-sub-group[open] .tw-sub-chevron{transform:rotate(180deg)}
+.tw-sub-body{padding:0 16px 16px;border-top:1px solid var(--line)}
+.tw-sub-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0}
+.tw-latency{display:inline-flex;min-width:67px;justify-content:center;border-radius:99px;padding:4px 9px;
+background:#eef1f5;color:var(--muted);font-size:12px;font-weight:750;white-space:nowrap}
+.tw-latency.is-good{background:var(--good-t);color:var(--good)}
+.tw-latency.is-warn{background:var(--warn-t);color:var(--warn)}
+.tw-latency.is-bad{background:var(--bad-t);color:var(--bad)}
+/* protection */
+.tw-health-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.tw-health-item{background:#f5f7fa;border-radius:12px;padding:12px;min-width:0}
+.tw-health-item small{display:block;color:var(--muted);margin-bottom:3px}
+.tw-health-item strong{display:block;overflow:hidden;text-overflow:ellipsis}
+.tw-paths{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tw-path{appearance:none;border:1px solid var(--line);border-radius:14px;background:#f8f9fc;color:var(--ink);
+padding:16px;text-align:left;cursor:pointer;display:grid;grid-template-columns:auto 1fr auto;
+align-items:center;gap:12px;font:inherit;transition:border-color .16s,transform .16s,background .16s}
+.tw-path:hover{border-color:#aebce1;background:#fff;transform:translateY(-1px)}
+.tw-path .tw-icon{background:var(--brand-t);color:var(--brand)}
+.tw-path strong,.tw-path small{display:block}
+.tw-path small{color:var(--muted);margin-top:2px}
+.tw-path-arrow{color:#8794aa;font-size:20px}
+/* wi-fi join qr codes */
+.tw-qrs{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px}
+.tw-qr small{display:block;color:var(--muted);font-size:13px;font-weight:750;margin-bottom:6px}
+.tw-qr svg{width:184px;max-width:100%;height:auto;background:#fff;border:1px solid var(--line);
+border-radius:12px;padding:8px}
+/* toast */
+.tw-toast{position:fixed;left:50%;bottom:max(1.2em,env(safe-area-inset-bottom));transform:translateX(-50%);
+background:var(--ink);color:#fff;border-radius:14px;padding:.75em 1.3em;max-width:92vw;z-index:50;
+box-shadow:var(--shadow);font-weight:500}
+@keyframes tw-spin{to{transform:rotate(360deg)}}
+@keyframes tw-enter{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+@keyframes tw-focus{0%,100%{border-color:var(--line)}
+18%{border-color:#8098ea;box-shadow:0 0 0 5px rgba(49,87,213,.12),var(--shadow)}}
+@media(max-width:820px){
+	.tw-col-4,.tw-col-5,.tw-col-7,.tw-col-8{grid-column:1/-1}
+	.tw-shell{padding:22px 16px 45px}
+	.tw-intro h1{font-size:26px}
+	.tw-health-grid{grid-template-columns:1fr}
+	.tw-topbar{padding:0 16px}
+	.tw-brand small{display:none}
+}
+/* phones: tabs become a bottom bar, rows stack */
+@media(max-width:560px){
+	.tw-shell{padding:16px 12px 105px}
+	.tw-topbar{height:60px;padding:0 12px}
+	.tw-brand-mark{width:34px;height:34px}
+	.tw-brand strong{font-size:15px}
+	.tw-topbar .tw-button{font-size:12px;padding:7px 9px}
+	.tw-intro h1{font-size:24px}
+	.tw-nav{position:fixed;left:8px;right:8px;bottom:max(8px,env(safe-area-inset-bottom));z-index:30;
+		margin:0;padding:4px;gap:2px;background:rgba(237,241,247,.94);
+		box-shadow:0 12px 38px rgba(20,31,54,.25);backdrop-filter:blur(16px)}
+	.tw-nav button{flex:1;justify-content:center;padding:10px 5px;font-size:11px;gap:5px}
+	.tw-toast{bottom:calc(76px + env(safe-area-inset-bottom))}
+	.tw-next{grid-template-columns:auto 1fr;padding:16px;gap:12px}
+	.tw-next-icon{width:44px;height:44px;border-radius:14px}
+	.tw-next .tw-button{grid-column:1/-1;width:100%}
+	.tw-card{padding:17px;border-radius:15px}
+	.tw-status-tile{min-height:145px}
+	.tw-form-grid,.tw-qrs,.tw-paths{grid-template-columns:1fr}
+	.tw-field.tw-wide{grid-column:auto}
+	.tw-network,.tw-profile,.tw-endpoint{align-items:flex-start;flex-direction:column}
+	.tw-current-network{align-items:flex-start;flex-wrap:wrap}
+	.tw-list-heading{align-items:flex-start;flex-direction:column}
+	.tw-list-heading small{text-align:left}
+	.tw-actions{width:100%;justify-content:flex-start}
+	.tw-actions .tw-button{flex:1}
+	.tw-sub-toolbar{align-items:flex-start;flex-direction:column}
+	.tw-choice{width:100%}
+	.tw-choice button{flex:1}
+	.tw-section-title h2{font-size:21px}
+}
+@media(prefers-reduced-motion:reduce){
+	.tw-panel.is-entering,.tw-card.tw-focus{animation:none}
+	.tw-status-tile,.tw-path{transition:none}
+}
+</style>
+</head>
+<body>
+<header class="tw-topbar">
+	<div class="tw-brand"><span class="tw-brand-mark">TR</span>
+		<span><strong><%:Travel Router%></strong><small><%:Simple, private internet wherever you are%></small></span></div>
+	<a class="tw-button" href="<%=luci.dispatcher.build_url("admin", "status", "overview")%>"><%:Advanced mode%> <span aria-hidden="true">↗</span></a>
+</header>
+<div class="tw-shell">
+	<div class="tw-intro">
+		<h1><%:Your travel router%></h1>
+		<p><%:See what is ready, then follow the one next step that matters.%></p>
+	</div>
+	<nav class="tw-nav" role="tablist" aria-label="<%:Setup sections%>">
+		<button type="button" role="tab" data-panel="overview" id="nav-overview" aria-selected="true"><span class="tw-dot"></span><%:Overview%></button>
+		<button type="button" role="tab" data-panel="internet" id="nav-internet" aria-selected="false"><span class="tw-dot"></span><%:Internet%></button>
+		<button type="button" role="tab" data-panel="privacy" id="nav-privacy" aria-selected="false"><span class="tw-dot"></span><%:Privacy%></button>
+		<button type="button" role="tab" data-panel="wifi" id="nav-wifi" aria-selected="false"><span class="tw-dot"></span><%:Wi-Fi%></button>
+	</nav>
+	<main>
 
-<div class="tw-cards">
-	<div class="tw-card"><h4><%:Hotel Wi-Fi%></h4><div id="st-wan">…</div></div>
-	<div class="tw-card"><h4><%:Internet%></h4><div id="st-net">…</div></div>
-	<div class="tw-card"><h4><%:Private network%></h4><div id="st-vpn">…</div></div>
-</div>
+	<section class="tw-panel" data-view="overview">
+		<div class="tw-next" id="next-card">
+			<span class="tw-next-icon" id="next-icon" aria-hidden="true">…</span>
+			<div class="tw-next-copy">
+				<small><%:Your next step%></small>
+				<h2 id="next-title"><%:Checking your setup…%></h2>
+				<p id="next-text"><%:This will only take a moment.%></p>
+			</div>
+			<button class="tw-button tw-button-primary" type="button" id="next-action" disabled><%:Checking…%></button>
+		</div>
+		<div class="tw-grid">
+			<button type="button" class="tw-card tw-status-tile tw-col-4" id="tile-wan" data-go="internet" data-focus="card-networks">
+				<span class="tw-status-top"><span class="tw-icon" aria-hidden="true">⌁</span><span class="tw-state" id="st-wan-label"><%:Checking%></span></span>
+				<span class="tw-status-main" id="st-wan"><%:Looking for internet%></span>
+				<span class="tw-status-sub"><%:Connect or switch Wi-Fi%><span class="tw-arrow">›</span></span>
+			</button>
+			<button type="button" class="tw-card tw-status-tile tw-col-4" id="tile-net" data-go="internet" data-focus="card-access">
+				<span class="tw-status-top"><span class="tw-icon" aria-hidden="true">◎</span><span class="tw-state" id="st-net-label"><%:Checking%></span></span>
+				<span class="tw-status-main" id="st-net"><%:Checking access%></span>
+				<span class="tw-status-sub"><%:Access and hotel sign-in%><span class="tw-arrow">›</span></span>
+			</button>
+			<button type="button" class="tw-card tw-status-tile tw-col-4" id="tile-vpn" data-go="privacy" data-focus="card-protection-choices">
+				<span class="tw-status-top"><span class="tw-icon" aria-hidden="true">◇</span><span class="tw-state" id="st-vpn-label"><%:Checking%></span></span>
+				<span class="tw-status-main" id="st-vpn"><%:Checking protection%></span>
+				<span class="tw-status-sub"><%:VPN and proxy settings%><span class="tw-arrow">›</span></span>
+			</button>
+			<div class="tw-card tw-hero tw-col-8 tw-lift">
+				<h2><%:Two networks, one clear choice%></h2>
+				<p><%:Use the setup network for hotel sign-in pages and managing the router. Use the private network when you want all traffic protected by your VPN.%></p>
+				<div class="tw-network-pills">
+					<div class="tw-network-pill"><small><%:Setup · direct internet%></small><strong id="ssid-mgmt">…</strong></div>
+					<div class="tw-network-pill"><small><%:Private · VPN only%></small><strong id="ssid-vault">…</strong></div>
+				</div>
+				<p class="tw-hero-warn" id="hero-defpw" hidden>⚠ <%:These networks still use the default passwords. Change them in the Wi-Fi tab.%></p>
+			</div>
+			<div class="tw-card tw-col-4">
+				<div class="tw-card-header"><div><h2><%:Protection check%></h2><p><%:A real tunnel and leak test.%></p></div></div>
+				<div id="overview-health" class="tw-callout"><%:Checking your private connection…%></div>
+				<div class="tw-row tw-mt">
+					<button class="tw-button" type="button" id="btn-health-overview"><%:Check again%></button>
+					<button class="tw-button" type="button" data-go="privacy" data-focus="card-health"><%:View details%></button>
+				</div>
+			</div>
+		</div>
+	</section>
 
-<div class="tw-note">
-	<strong><%:Your two networks:%></strong>
-	<span id="ssid-mgmt">…</span> (<%:setup, direct internet%>),
-	<span id="ssid-vault">…</span> (<%:always VPN, or no internet%>).
-	<a id="tw-advanced" href="<%=luci.dispatcher.build_url("admin")%>"><%:Advanced (full LuCI)%></a>
-</div>
+	<section class="tw-panel" data-view="internet" hidden>
+		<div class="tw-section-title"><h2><%:Connect to the internet%></h2><p><%:Use a cable or join the Wi-Fi where you are staying.%></p></div>
+		<div class="tw-grid">
+			<div class="tw-card tw-col-5" id="card-preference">
+				<div class="tw-card-header"><div><h2><%:Connection preference%></h2><p id="up-status"><%:Checking connections…%></p></div></div>
+				<div class="tw-field">
+					<label for="up-select"><%:Prefer%></label>
+					<select id="up-select">
+						<option value="auto"><%:Automatic (cable first)%></option>
+						<option value="wifi"><%:Wi-Fi%></option>
+						<option value="ethernet"><%:Ethernet cable%></option>
+					</select>
+				</div>
+				<div class="tw-row tw-mt"><button class="tw-button tw-button-primary" type="button" id="btn-upstream"><%:Apply preference%></button></div>
+				<p class="tw-message" id="up-msg" aria-live="polite"></p>
+			</div>
+			<div class="tw-card tw-col-7" id="card-access">
+				<div class="tw-card-header">
+					<div><h2><%:Internet access%></h2><p><%:Some hotels need you to accept terms or sign in.%></p></div>
+					<span class="tw-state" id="captive-badge"><%:Checking%></span>
+				</div>
+				<div id="net-status" class="tw-callout"><%:Checking for a sign-in page…%></div>
+				<ol class="tw-steps" id="hotel-steps" hidden>
+					<li><%:Stay connected to this router’s setup Wi-Fi on your phone or laptop%> (<b id="mgmt-name">…</b>).</li>
+					<li><%:Tap%> <b><%:Open sign-in page%></b> <%:and finish the hotel’s page.%></li>
+					<li><%:Come back here — this page notices by itself when you are online.%></li>
+				</ol>
+				<div class="tw-row tw-mt">
+					<a class="tw-button tw-button-primary" id="btn-portal" hidden target="_blank" rel="noopener"><%:Open sign-in page%> ↗</a>
+					<button class="tw-button" type="button" id="btn-recheck"><%:Check again%></button>
+				</div>
+			</div>
+			<div class="tw-card tw-col-12" id="card-networks">
+				<div class="tw-card-header">
+					<div><h2><%:Wi-Fi networks%></h2><p><%:See the current connection, switch networks, or manage remembered ones.%></p></div>
+					<button class="tw-button tw-button-primary" type="button" id="btn-scan"><%:Scan networks%></button>
+				</div>
+				<div class="tw-current-network" id="current-wifi">
+					<span class="tw-icon" aria-hidden="true">⌁</span>
+					<span class="tw-current-copy"><strong id="current-wifi-name"><%:Checking…%></strong><small id="current-wifi-detail"></small></span>
+					<span class="tw-state" id="current-wifi-state"><%:Checking%></span>
+					<button class="tw-button tw-button-danger tw-button-small" type="button" id="btn-disconnect" hidden><%:Disconnect%></button>
+				</div>
+				<p class="tw-message" id="scan-msg" aria-live="polite"></p>
+				<div class="tw-list-heading"><h3><%:Nearby networks%></h3><small><%:Choose a network to use it for internet.%></small></div>
+				<div class="tw-network-list" id="net-list"><div class="tw-empty"><%:Looking for nearby Wi-Fi…%></div></div>
+				<div class="tw-join" id="join-box" hidden>
+					<h3 id="join-ssid"></h3>
+					<div class="tw-field tw-mt" id="join-key-field">
+						<label for="join-key"><%:Wi-Fi password%></label>
+						<input type="password" id="join-key" autocomplete="off">
+					</div>
+					<p class="tw-muted" id="join-open" hidden><%:Open network — no password needed.%></p>
+					<div class="tw-row tw-mt">
+						<button class="tw-button tw-button-primary" type="button" id="btn-join"><%:Connect%></button>
+						<button class="tw-button" type="button" id="btn-join-cancel"><%:Cancel%></button>
+					</div>
+					<p class="tw-message" id="join-msg" aria-live="polite"></p>
+				</div>
+				<div class="tw-list-heading"><h3><%:Remembered networks%></h3><small><%:Reconnect without typing the password again, or forget old networks.%></small></div>
+				<div class="tw-network-list" id="saved-list"><div class="tw-empty"><%:Loading remembered networks…%></div></div>
+			</div>
+		</div>
+	</section>
 
-<div class="cbi-section">
-<h3>1. <%:Upstream internet%></h3>
-<div class="tw-box" style="margin:.5em 0;max-width:44em">
-	<p id="up-status">…</p>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Use%></label>
-		<div class="cbi-value-field"><select id="up-select">
-			<option value="auto"><%:Automatic (cable preferred)%></option>
-			<option value="wifi"><%:Prefer Wi-Fi%></option>
-			<option value="ethernet"><%:Prefer cable%></option>
-		</select>
-		<button class="cbi-button" id="btn-upstream"><%:Apply%></button></div></div>
-	<p><span id="up-msg"></span></p>
-</div>
-<h3><%:Join hotel or home Wi-Fi%></h3>
-<p id="tw-current"></p>
-<p>
-	<button class="cbi-button" id="btn-scan"><%:Scan networks%></button>
-	<span id="scan-msg"></span>
-</p>
-<table class="table" id="net-table" style="display:none">
-	<tr class="tr table-titles"><th class="th"><%:Network%></th><th class="th"><%:Band%></th><th class="th"><%:Signal%></th><th class="th"><%:Security%></th><th class="th"></th></tr>
-	<tbody id="net-list"></tbody>
-</table>
-<div id="join-box" style="display:none" class="tw-box">
-	<h4 id="join-ssid"></h4>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Password (blank if open)%></label>
-		<div class="cbi-value-field"><input type="password" id="join-key" class="cbi-input-password" autocomplete="off"></div></div>
-	<p><button class="cbi-button cbi-button-apply" id="btn-join"><%:Connect%></button>
-	<span id="join-msg"></span></p>
-</div>
-</div>
+	<section class="tw-panel" data-view="privacy" hidden>
+		<div class="tw-section-title"><h2><%:Private network%></h2><p><%:Everything on the private Wi-Fi goes through the VPN you choose here. With none on, private devices stay offline — that is the safety lock working.%></p></div>
+		<div class="tw-grid">
+			<div class="tw-card tw-col-12" id="card-health">
+				<div class="tw-card-header">
+					<div><h2><%:Protection status%></h2><p><%:The private Wi-Fi is blocked automatically if its tunnel stops.%></p></div>
+					<div class="tw-actions">
+						<button class="tw-button" type="button" id="btn-health"><%:Run health check%></button>
+						<button class="tw-button tw-button-danger" type="button" id="btn-vpn-off"><%:Turn VPN off%></button>
+					</div>
+				</div>
+				<div id="health" class="tw-callout"><%:Checking tunnel…%></div>
+				<div class="tw-health-grid tw-mt">
+					<div class="tw-health-item"><small><%:Tunnel%></small><strong id="health-tunnel">—</strong></div>
+					<div class="tw-health-item"><small><%:Direct public IP%></small><strong id="health-direct">—</strong></div>
+					<div class="tw-health-item"><small><%:Private public IP%></small><strong id="health-private">—</strong></div>
+				</div>
+				<details class="tw-tech"><summary><%:Technical details%></summary><p class="tw-muted" id="health-tech"></p></details>
+				<p class="tw-message" id="vpn-msg" aria-live="polite"></p>
+			</div>
+			<div class="tw-card tw-col-12" id="card-protection-choices">
+				<div class="tw-card-header"><div><h2><%:Choose your protection%></h2><p><%:Pick the kind of setup your VPN provider gave you.%></p></div></div>
+				<div class="tw-paths">
+					<button type="button" class="tw-path" id="path-files"><span class="tw-icon" aria-hidden="true">▧</span>
+						<span><strong><%:VPN file%></strong><small><%:A WireGuard .conf or OpenVPN .ovpn file%></small></span><span class="tw-path-arrow">›</span></button>
+					<button type="button" class="tw-path" id="path-subs"><span class="tw-icon" aria-hidden="true">◇</span>
+						<span><strong><%:Proxy subscription%></strong><small><%:A link or codes containing several endpoints%></small></span><span class="tw-path-arrow">›</span></button>
+				</div>
+			</div>
+			<div class="tw-card tw-col-12" id="card-vpn-files">
+				<div class="tw-card-header">
+					<div><h2><%:VPN files%></h2><p><%:WireGuard and OpenVPN setups — save one per place and switch anytime.%></p></div>
+					<button class="tw-button tw-button-primary" type="button" id="btn-prof-new">+ <%:Add VPN%></button>
+				</div>
+				<div class="tw-profile-list" id="prof-list"><div class="tw-empty"><%:Loading…%></div></div>
+				<p class="tw-message" id="files-msg" aria-live="polite"></p>
+				<div class="tw-edit" id="prof-edit" hidden>
+					<div class="tw-row tw-between"><h3 id="prof-edit-title"><%:Add VPN%></h3>
+						<button class="tw-button tw-button-small" type="button" id="btn-prof-cancel" aria-label="<%:Close%>">✕</button></div>
+					<div class="tw-choice tw-mt">
+						<button type="button" data-mode="wireguard" class="is-active">WireGuard</button>
+						<button type="button" data-mode="openvpn">OpenVPN</button>
+					</div>
+					<div class="tw-form-grid tw-mt">
+						<div class="tw-field tw-wide"><label for="prof-name"><%:Name%></label><input id="prof-name" maxlength="64" placeholder="<%:e.g. Home WireGuard%>"></div>
+					</div>
+					<div id="tab-wireguard" class="tw-stack tw-mt">
+						<div class="tw-field"><label for="wg-paste"><%:Paste a WireGuard .conf file%></label>
+							<textarea id="wg-paste" rows="4" placeholder="<%:Paste to fill the fields below automatically%>"></textarea></div>
+						<div><button class="tw-button tw-button-small" type="button" id="btn-wg-parse"><%:Fill from config%></button></div>
+						<div class="tw-form-grid">
+							<div class="tw-field"><label for="wg-private_key"><%:Private key%></label><input type="password" id="wg-private_key" autocomplete="off"></div>
+							<div class="tw-field"><label for="wg-addresses"><%:Address%></label><input id="wg-addresses" placeholder="10.0.0.2/32"></div>
+							<div class="tw-field"><label for="wg-dns"><%:DNS%></label><input id="wg-dns" placeholder="1.1.1.1"></div>
+							<div class="tw-field"><label for="wg-peer_public_key"><%:Peer public key%></label><input id="wg-peer_public_key" autocomplete="off"></div>
+							<div class="tw-field"><label for="wg-preshared_key"><%:Preshared key (optional)%></label><input type="password" id="wg-preshared_key" autocomplete="off"></div>
+							<div class="tw-field"><label for="wg-endpoint_host"><%:Endpoint host%></label><input id="wg-endpoint_host"></div>
+							<div class="tw-field"><label for="wg-endpoint_port"><%:Endpoint port%></label><input id="wg-endpoint_port" placeholder="51820" inputmode="numeric"></div>
+						</div>
+					</div>
+					<div id="tab-openvpn" class="tw-stack tw-mt" hidden>
+						<div class="tw-field"><label for="ovpn-config"><%:Paste the .ovpn config%></label><textarea id="ovpn-config" rows="7"></textarea></div>
+						<div class="tw-form-grid">
+							<div class="tw-field"><label for="ovpn-username"><%:Username (if needed)%></label><input id="ovpn-username" autocomplete="off"></div>
+							<div class="tw-field"><label for="ovpn-password"><%:Password (if needed)%></label><input type="password" id="ovpn-password" autocomplete="off"></div>
+						</div>
+					</div>
+					<div class="tw-row tw-mt">
+						<button class="tw-button" type="button" id="btn-prof-save"><%:Save%></button>
+						<button class="tw-button tw-button-primary" type="button" id="btn-prof-use"><%:Save and connect%></button>
+					</div>
+					<p class="tw-message" id="prof-msg" aria-live="polite"></p>
+				</div>
+			</div>
+			<div class="tw-card tw-col-12" id="card-subscriptions">
+				<div class="tw-card-header">
+					<div><h2><%:Proxy subscriptions%></h2><p><%:Add one or more providers, then connect from their endpoint lists.%></p></div>
+					<button class="tw-button tw-button-primary" type="button" id="btn-sub-new">+ <%:Add subscription%></button>
+				</div>
+				<div class="tw-sub-list" id="sub-list"><div class="tw-empty"><%:Loading…%></div></div>
+				<p class="tw-message" id="subs-msg" aria-live="polite"></p>
+				<div class="tw-edit" id="sub-edit" hidden>
+					<div class="tw-row tw-between"><h3 id="sub-edit-title"><%:Add subscription%></h3>
+						<button class="tw-button tw-button-small" type="button" id="btn-sub-cancel" aria-label="<%:Close%>">✕</button></div>
+					<input type="hidden" id="sub-id" value="">
+					<div class="tw-form-grid tw-mt">
+						<div class="tw-field"><label for="sub-name"><%:Name%></label><input id="sub-name" maxlength="64" placeholder="<%:e.g. My provider%>"></div>
+						<div class="tw-field"><label for="sub-url"><%:Subscription URL%></label><input id="sub-url" type="url" inputmode="url" placeholder="https://…"></div>
+						<div class="tw-field tw-wide"><label for="sub-links"><%:Or paste proxy links%></label>
+							<textarea id="sub-links" rows="3" placeholder="vless://…  vmess://…  trojan://…  ss://…"></textarea></div>
+					</div>
+					<p class="tw-muted"><%:The router downloads the list when you save. Credentials stay on this router.%></p>
+					<button class="tw-button tw-button-primary" type="button" id="btn-sub-save"><%:Add and fetch endpoints%></button>
+					<p class="tw-message" id="sub-msg" aria-live="polite"></p>
+				</div>
+			</div>
+		</div>
+	</section>
 
-<div class="cbi-section">
-<h3>2. <%:Internet & hotel login page%></h3>
-<p id="net-status"></p>
-<p>
-	<button class="cbi-button" id="btn-recheck"><%:Check again%></button>
-	<a class="cbi-button" id="btn-portal" style="display:none" target="_blank" rel="noopener"><%:Open login page%></a>
-</p>
-</div>
+	<section class="tw-panel" data-view="wifi" hidden>
+		<div class="tw-section-title"><h2><%:Your Wi-Fi names%></h2><p><%:Give the direct and protected networks names that are easy to recognise. Applies to both 2.4 and 5 GHz.%></p></div>
+		<div class="tw-card tw-lift">
+			<div class="tw-callout is-bad" id="wifi-defpw" hidden style="margin-bottom:12px"><strong><%:Default passwords.%></strong> <%:Anyone who knows this router model can join. Choose your own passwords below.%></div>
+			<div class="tw-callout is-warn" style="margin-bottom:18px"><strong><%:Heads up:%></strong> <%:Changing the Wi-Fi you are using will disconnect this page. Reconnect using its new name and password.%></div>
+			<div class="tw-form-grid">
+				<div class="tw-field"><label for="wifi-mgmt-ssid"><%:Setup network name%></label><input id="wifi-mgmt-ssid" maxlength="32"></div>
+				<div class="tw-field"><label for="wifi-mgmt-key"><%:Setup network password%></label><input type="password" id="wifi-mgmt-key" autocomplete="new-password" minlength="8" maxlength="63"></div>
+				<div class="tw-field"><label for="wifi-vault-ssid"><%:Private network name%></label><input id="wifi-vault-ssid" maxlength="32"></div>
+				<div class="tw-field"><label for="wifi-vault-key"><%:Private network password%></label><input type="password" id="wifi-vault-key" autocomplete="new-password" minlength="8" maxlength="63"></div>
+			</div>
+			<div class="tw-row" style="margin-top:18px"><button class="tw-button tw-button-primary" type="button" id="btn-wifi-save"><%:Save Wi-Fi settings%></button></div>
+			<p class="tw-message" id="wifi-msg" aria-live="polite"></p>
+			<div class="tw-qrs">
+				<div class="tw-qr" id="qr-mgmt" hidden></div>
+				<div class="tw-qr" id="qr-vault" hidden></div>
+			</div>
+		</div>
+	</section>
 
-<div class="cbi-section">
-<h3>3. <%:VPN profiles for your private network%></h3>
-<p>Save as many as you like (home, travel, backup) and switch anytime. Only the active one is used; with none active, the private network has no internet (kill switch).</p>
-<div id="prof-list"></div>
-<p><button class="cbi-button" id="btn-prof-new">+ New profile</button>
-<button class="cbi-button cbi-button-remove" id="btn-vpn-off"><%:Turn VPN off%></button>
-<span id="vpn-msg"></span></p>
-<div id="prof-edit" style="display:none" class="tw-box">
-<input type="hidden" id="prof-id" value="">
-<div class="cbi-value"><label class="cbi-value-title"><%:Name%></label>
-	<div class="cbi-value-field"><input id="prof-name" class="cbi-input-text" maxlength="64" placeholder="e.g. Tokyo VLESS"></div></div>
-<div class="tw-tabs">
-	<button class="cbi-button" data-mode="wireguard">WireGuard</button>
-	<button class="cbi-button" data-mode="openvpn">OpenVPN</button>
-	<button class="cbi-button" data-mode="singbox"><%:Proxy (subscription)%></button>
+	</main>
 </div>
-
-<div id="tab-wireguard" class="tw-box" style="display:none">
-	<div class="cbi-value"><label class="cbi-value-title"><%:Paste .conf (auto-fill)%></label>
-		<div class="cbi-value-field"><textarea id="wg-paste" rows="4" style="width:100%"></textarea></div></div>
-	<p><button class="cbi-button" id="btn-wg-parse"><%:Parse%></button></p>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Private key%></label>
-		<div class="cbi-value-field"><input id="wg-private_key" class="cbi-input-text" autocomplete="off"></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Addresses%></label>
-		<div class="cbi-value-field"><input id="wg-addresses" class="cbi-input-text" placeholder="10.0.0.2/32"></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:DNS%></label>
-		<div class="cbi-value-field"><input id="wg-dns" class="cbi-input-text" placeholder="1.1.1.1"></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Peer public key%></label>
-		<div class="cbi-value-field"><input id="wg-peer_public_key" class="cbi-input-text" autocomplete="off"></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Preshared key (optional)%></label>
-		<div class="cbi-value-field"><input id="wg-preshared_key" class="cbi-input-text" autocomplete="off"></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Endpoint host%></label>
-		<div class="cbi-value-field"><input id="wg-endpoint_host" class="cbi-input-text"></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Endpoint port%></label>
-		<div class="cbi-value-field"><input id="wg-endpoint_port" class="cbi-input-text" placeholder="51820"></div></div>
-</div>
-
-<div id="tab-openvpn" class="tw-box" style="display:none">
-	<div class="cbi-value"><label class="cbi-value-title"><%:Paste .ovpn config%></label>
-		<div class="cbi-value-field"><textarea id="ovpn-config" rows="6" style="width:100%"></textarea></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Username (if needed)%></label>
-		<div class="cbi-value-field"><input id="ovpn-username" class="cbi-input-text" autocomplete="off"></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Password (if needed)%></label>
-		<div class="cbi-value-field"><input type="password" id="ovpn-password" class="cbi-input-password" autocomplete="off"></div></div>
-</div>
-
-<div id="tab-singbox" class="tw-box" style="display:none">
-	<div class="cbi-value"><label class="cbi-value-title"><%:Subscription URL%></label>
-		<div class="cbi-value-field"><input id="sb-sub" class="cbi-input-text" style="width:100%"></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:…or paste link(s)%></label>
-		<div class="cbi-value-field"><textarea id="sb-links" rows="3" style="width:100%" placeholder="vless://… / vmess://… / trojan://… / ss://…"></textarea></div></div>
-	<p>Subscription or links are fetched and imported when you save.</p>
-	<div id="sb-servers"></div>
-	<p><button class="cbi-button" id="btn-sb-refresh">Refresh subscription</button></p>
-</div>
-	<p><button class="cbi-button cbi-button-apply" id="btn-prof-save">Save</button>
-	<button class="cbi-button cbi-button-apply" id="btn-prof-use">Save & use</button>
-	<span id="prof-msg"></span></p>
-</div>
-</div>
-
-<div class="cbi-section">
-<h3><%:Your Wi-Fi names & passwords%></h3>
-<p><%:Applies to both 2.4 and 5 GHz. Changing the network you are connected to right now will disconnect you — just reconnect with the new name.%></p>
-<div class="tw-box">
-	<h4><%:Setup network (direct internet)%></h4>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Name%></label>
-		<div class="cbi-value-field"><input id="wifi-mgmt-ssid" class="cbi-input-text" maxlength="32"></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Password%></label>
-		<div class="cbi-value-field"><input id="wifi-mgmt-key" class="cbi-input-text" autocomplete="off" minlength="8" maxlength="63"></div></div>
-	<h4><%:Private network (always VPN)%></h4>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Name%></label>
-		<div class="cbi-value-field"><input id="wifi-vault-ssid" class="cbi-input-text" maxlength="32"></div></div>
-	<div class="cbi-value"><label class="cbi-value-title"><%:Password%></label>
-		<div class="cbi-value-field"><input id="wifi-vault-key" class="cbi-input-text" autocomplete="off" minlength="8" maxlength="63"></div></div>
-	<p><button class="cbi-button cbi-button-apply" id="btn-wifi-save"><%:Save Wi-Fi names%></button>
-	<span id="wifi-msg"></span></p>
-</div>
-</div>
-
-<div class="cbi-section">
-<h3>4. <%:Verify the tunnel%></h3>
-<p id="health"></p>
-<p><button class="cbi-button" id="btn-health"><%:Check VPN health%></button></p>
-</div>
-
+<div id="toast" class="tw-toast" role="status" hidden></div>
 <script>
 var API = '<%=luci.dispatcher.build_url("admin","travelwizard","api")%>';
 var TOKEN = '<%=token%>';
+/* every call resolves to an object: transport and HTTP failures come back
+ * as { error: ... }, so callers only ever check j.error */
 function post(path, data) {
 	var f = new FormData();
 	f.append('token', TOKEN); /* required by the post() API entries (CSRF) */
 	for (var k in data) f.append(k, data[k]);
 	return fetch(API + path, { method: 'POST', body: f, credentials: 'same-origin' })
-		.then(function(r) { return r.json(); });
+		.then(function(r) {
+			/* an expired login answers with the (non-JSON) sign-in page */
+			if (r.status === 403) return { error: 'session' };
+			if (!r.ok) return { error: '<%:Request failed%> (HTTP ' + r.status + ')' };
+			return r.json().catch(function() { return { error: 'session' }; });
+		}, function() { return { error: 'network' }; });
 }
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
-	return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
-
-/* status header */
-function refreshStatus() {
-	post('/scan', {}).then(function(j) {
-		var cur = j.current || {};
-		document.getElementById('st-wan').innerHTML = cur.up
-			? '<span class="tw-ok">●</span> ' + esc(cur.ssid || cur.upstream)
-			: '<span class="tw-bad">○</span> <%:not connected%>';
-		document.getElementById('tw-current').innerHTML = cur.up
-			? '<%:Connected to%> <strong>' + esc(cur.ssid) + '</strong>'
-			: (cur.saved && cur.saved !== '__unset__'
-				? '<%:Last network:%> ' + esc(cur.saved)
-				: '<%:Not connected yet.%>');
-	});
-	post('/captive', {}).then(function(j) { showCaptive(j); });
-	post('/health', {}).then(function(j) { showHealth(j, false); });
-	refreshUpstream();
-	post('/vpn_get', {}).then(function(j) {
-		document.getElementById('ssid-mgmt').textContent = j.mgmt_ssid || '';
-		document.getElementById('ssid-vault').textContent = j.vault_ssid || '';
-		document.getElementById('st-vpn').textContent =
-			(j.vpn_mode && j.vpn_mode !== 'off') ? j.vpn_mode : '<%:off%>';
-	});
-	refreshProfiles();
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+	return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function el(id) { return document.getElementById(id); }
+function all(q, root) { return Array.prototype.slice.call((root || document).querySelectorAll(q)); }
+function mk(tag, cls, text) {
+	var e = document.createElement(tag);
+	if (cls) e.className = cls;
+	if (text != null) e.textContent = text;
+	return e;
+}
+function button(label, cls, fn) {
+	var b = mk('button', 'tw-button tw-button-small' + (cls ? ' ' + cls : ''), label);
+	b.type = 'button';
+	if (fn) b.addEventListener('click', function() { fn(b); });
+	return b;
 }
 
-/* step 1: upstream choice */
-function refreshUpstream() {
-	post('/upstream', {}).then(function(j) {
-		var w = j.wifi || {}, c = j.wired || {};
-		var wt = w.up ? esc(w.ssid || 'up') + (w.ip ? ' (' + esc(w.ip) + ')' : '') : '<%:not joined%>';
-		var ct = (c.carrier ? '<%:plugged%>' : '<%:no cable%>') +
-			((c.up && c.ip) ? ', ' + esc(c.ip) : '');
-		document.getElementById('up-status').innerHTML =
-			'Wi-Fi: ' + wt + ' · Cable: ' + ct +
-			' · Using: <strong>' + esc(j.active || 'none') + '</strong>';
-		document.getElementById('up-select').value = j.choice || 'auto';
-	});
+var toastTimer = null;
+function toast(msg) {
+	var t = el('toast');
+	t.textContent = msg; t.hidden = false;
+	if (toastTimer) clearTimeout(toastTimer);
+	toastTimer = setTimeout(function() { t.hidden = true; }, 3500);
 }
-document.getElementById('btn-upstream').addEventListener('click', function() {
-	var m = document.getElementById('up-msg');
-	m.textContent = '<%:applying…%>';
-	post('/upstream', { mode: document.getElementById('up-select').value })
-	.then(function(j) {
-		var s = '<%:using:%> <strong>' + esc(j.active || 'none') + '</strong>';
-		if (j.subnet && j.subnet.changed)
-			s += ' (<%:moved to%> ' + esc(j.subnet.lan) + ')';
-		m.innerHTML = j.error
-			? '<span class="tw-bad">' + esc(j.error) + '</span>'
-			: '<span class="tw-ok">' + s + '</span>';
-		if (j.internet) showCaptive(j.internet);
-		refreshStatus();
-	});
-});
+function errMsg(j) {
+	if (j && j.error === 'network')
+		return '<%:Network error — is the router reachable?%>';
+	if (j && j.error === 'session')
+		return '<%:Your sign-in expired — reload the page to sign in again.%>';
+	return (j && j.error) || '<%:failed%>';
+}
+/* inline status line under a card; kind = good | warn | bad */
+function note(id, text, kind) {
+	var m = el(id);
+	m.className = 'tw-message' + (kind ? ' tw-' + kind : '');
+	m.textContent = text || '';
+}
 
-/* step 1: scan + join */
-var PICK = null;
-function bandLabel(b) { return b === '5g' ? '5 GHz' : b === '2g' ? '2.4 GHz' : ''; }
-document.getElementById('btn-scan').addEventListener('click', function() {
-	document.getElementById('scan-msg').textContent = '<%:scanning…%>';
-	post('/scan', {}).then(function(j) {
-		document.getElementById('scan-msg').textContent = '';
-		var tb = document.getElementById('net-list'); tb.innerHTML = '';
-		(j.networks || []).forEach(function(n) {
-			var hidden = (n.ssid || '').indexOf('(hidden)') === 0;
-			var tr = document.createElement('tr'); tr.className = 'tr';
-			tr.innerHTML = '<td class="td">' + esc(n.ssid) + '</td><td class="td">' +
-				bandLabel(n.band) + '</td><td class="td">' +
-				esc(n.signal) + ' dBm</td><td class="td">' + esc(n.encryption) + '</td>';
-			var td = document.createElement('td'); td.className = 'td';
-			if (!hidden) {
-				var b = document.createElement('button');
-				b.className = 'cbi-button cbi-button-action'; b.textContent = '<%:Select%>';
-				b.addEventListener('click', function() {
-					PICK = { ssid: n.ssid, band: n.band || '',
-						enc: n.encryption || '', bssid: n.bssid || '' };
-					document.getElementById('join-ssid').textContent =
-						n.ssid + ' (' + bandLabel(n.band) + ')';
-					document.getElementById('join-box').style.display = 'block';
-					document.getElementById('join-key').focus();
-				});
-				td.appendChild(b);
-			}
-			tr.appendChild(td); tb.appendChild(tr);
-		});
-		document.getElementById('net-table').style.display = '';
-	});
-});
-document.getElementById('btn-join').addEventListener('click', function() {
-	if (!PICK) return;
-	var m = document.getElementById('join-msg');
-	m.textContent = '<%:connecting…%>';
-	post('/join', { ssid: PICK.ssid, key: document.getElementById('join-key').value,
-		band: PICK.band, enc: PICK.enc, bssid: PICK.bssid })
-	.then(function(j) {
-		if (!j.linked) { m.innerHTML = '<span class="tw-bad">' + esc(j.error || 'failed') + '</span>'; return; }
-		var s = '<span class="tw-ok"><%:connected!%></span>';
-		if (j.subnet && j.subnet.changed)
-			s += ' <%:Note: hotel network clashed with ours; we moved to%> ' +
-				esc(j.subnet.lan) + ' / ' + esc(j.subnet.vault) + '.';
-		m.innerHTML = s;
-		if (j.internet) showCaptive(j.internet);
-		refreshStatus();
-	});
-});
-
-/* step 2: captive */
-function showCaptive(j) {
-	var p = document.getElementById('net-status');
-	var b = document.getElementById('btn-portal');
-	document.getElementById('st-net').innerHTML =
-		j.state === 'online' ? '<span class="tw-ok">● <%:online%></span>' :
-		j.state === 'captive' ? '<span class="tw-warn">● <%:login needed%></span>' :
-		'<span class="tw-bad">○ ' + esc(j.state) + '</span>';
-	if (j.state === 'online') { p.textContent = '<%:Internet works. No login page needed.%>'; b.style.display = 'none'; }
-	else if (j.state === 'captive') {
-		p.innerHTML = '<span class="tw-warn"><%:This Wi-Fi needs a login.%></span> ' + esc(j.detail || '');
-		b.href = j.login_url || '#'; b.style.display = '';
-	} else { p.textContent = '<%:No internet:%> ' + (j.reason || j.state); b.style.display = 'none'; }
-}
-document.getElementById('btn-recheck').addEventListener('click', function() {
-	post('/captive', {}).then(function(j) { showCaptive(j); });
-});
-
-/* step 3: profiles */
-var PROF_MODE = 'wireguard', PROF_ID = '', PROF_ACTIVE = false;
-function profTypeLabel(t) {
-	return t === 'wireguard' ? 'WireGuard' : t === 'openvpn' ? 'OpenVPN' :
-		t === 'singbox' ? 'Proxy' : t;
-}
-function showProfTab(mode) {
-	PROF_MODE = mode;
-	document.querySelectorAll('[id^=tab-]').forEach(function(t) { t.style.display = 'none'; });
-	document.getElementById('tab-' + mode).style.display = 'block';
-}
-document.querySelectorAll('[data-mode]').forEach(function(b) {
-	b.addEventListener('click', function() { showProfTab(b.getAttribute('data-mode')); });
-});
-function refreshProfiles() {
-	post('/profiles', {}).then(function(j) {
-		var box = document.getElementById('prof-list'); box.innerHTML = '';
-		(j.profiles || []).forEach(function(p) {
-			var d = document.createElement('div');
-			d.innerHTML = '<strong>' + (p.active ? '● ' : '○ ') + esc(p.name) + '</strong> ' +
-				'(' + profTypeLabel(p.type) + ')' +
-				(p.summary ? ' — ' + esc(p.summary) : '');
-			var sp = document.createElement('span'); sp.style.float = 'right';
-			if (!p.active) {
-				var u = document.createElement('button');
-				u.className = 'cbi-button cbi-button-apply'; u.textContent = 'Use';
-				u.addEventListener('click', function() { activateProfile(p.id); });
-				sp.appendChild(u); sp.appendChild(document.createTextNode(' '));
-			}
-			var e = document.createElement('button');
-			e.className = 'cbi-button'; e.textContent = 'Edit';
-			e.addEventListener('click', function() { editProfile(p); });
-			var del = document.createElement('button');
-			del.className = 'cbi-button cbi-button-remove'; del.textContent = 'Delete';
-			del.addEventListener('click', function() {
-				if (confirm('Delete "' + p.name + '"?')) {
-					post('/profile_delete', { id: p.id }).then(function() {
-						refreshProfiles(); refreshStatus();
-					});
-				}
-			});
-			sp.appendChild(e); sp.appendChild(document.createTextNode(' ')); sp.appendChild(del);
-			d.appendChild(sp); box.appendChild(d);
-		});
-		if (!(j.profiles || []).length)
-			box.innerHTML = '<p>No profiles yet — create one below.</p>';
-	});
-}
-function clearProfForm() {
-	document.getElementById('prof-id').value = '';
-	document.getElementById('prof-name').value = '';
-	['private_key', 'addresses', 'dns', 'peer_public_key', 'preshared_key',
-		'endpoint_host', 'endpoint_port'].forEach(function(k) {
-		var el = document.getElementById('wg-' + k);
-		el.value = ''; el.placeholder = '';
-	});
-	document.getElementById('wg-paste').value = '';
-	document.getElementById('ovpn-config').value = '';
-	document.getElementById('ovpn-config').placeholder = '';
-	document.getElementById('ovpn-username').value = '';
-	document.getElementById('ovpn-password').value = '';
-	document.getElementById('sb-sub').value = '';
-	document.getElementById('sb-links').value = '';
-	document.getElementById('sb-servers').innerHTML = '';
-	document.getElementById('prof-msg').textContent = '';
-	PROF_ACTIVE = false;
-}
-function editProfile(p) {
-	clearProfForm();
-	PROF_ID = p.id;
-	document.getElementById('prof-id').value = p.id;
-	document.getElementById('prof-name').value = p.name || '';
-	showProfTab(p.type);
-	if (p.type === 'wireguard') {
-		['addresses', 'dns', 'peer_public_key', 'endpoint_host', 'endpoint_port'].forEach(function(k) {
-			if (p[k] != null) document.getElementById('wg-' + k).value = p[k];
-		});
-		if (p.has_private_key) document.getElementById('wg-private_key').placeholder = '(unchanged)';
-		if (p.has_preshared_key) document.getElementById('wg-preshared_key').placeholder = '(unchanged)';
-	} else if (p.type === 'openvpn') {
-		if (p.username) document.getElementById('ovpn-username').value = p.username;
-		if (p.has_password) document.getElementById('ovpn-password').placeholder = '(unchanged)';
-		if (p.has_config) document.getElementById('ovpn-config').placeholder = 'Config saved — paste to replace';
-	} else if (p.type === 'singbox') {
-		if (p.sub_url) document.getElementById('sb-sub').value = p.sub_url;
-		if (p.has_config) document.getElementById('sb-links').placeholder = 'Servers imported — paste new links/URL to replace';
-		var sbox = document.getElementById('sb-servers'); sbox.innerHTML = '';
-		var srv = Array.isArray(p.servers) ? p.servers : [];
-		srv.forEach(function(t) {
-			var lab = document.createElement('label');
-			var inp = document.createElement('input');
-			inp.type = 'radio'; inp.name = 'sb-server'; inp.value = t;
-			if (t === p.server) inp.checked = true;
-			lab.appendChild(inp);
-			lab.appendChild(document.createTextNode(' ' + t));
-			sbox.appendChild(lab); sbox.appendChild(document.createElement('br'));
-		});
-		if (srv.length)
-			sbox.insertAdjacentHTML('afterbegin', '<p><strong>Servers (pick the active one):</strong></p>');
+/* disable a button (or buttons) with a spinner while a request is in
+ * flight. Transport problems are toasted unless silent (caller reports). */
+function withBusy(btn, promise, silent) {
+	var list = Array.isArray(btn) ? btn : [btn];
+	var prev = list.map(function(b) { return b.disabled; });
+	list.forEach(function(b) { b.disabled = true; b.classList.add('loading'); });
+	function restore() {
+		list.forEach(function(b, i) { b.disabled = prev[i]; b.classList.remove('loading'); });
 	}
-	PROF_ACTIVE = !!p.active;
-	document.getElementById('prof-edit').style.display = 'block';
+	return promise.then(function(j) {
+		restore();
+		if (!silent && j && (j.error === 'network' || j.error === 'session'))
+			toast(errMsg(j));
+		return j;
+	}, function() {
+		restore();
+		if (!silent) toast(errMsg({ error: 'network' }));
+		return { error: 'network' };
+	});
 }
-document.getElementById('btn-sb-refresh').addEventListener('click', function() {
-	if (!PROF_ID) {
-		document.getElementById('prof-msg').innerHTML = '<span class="tw-warn">Save the profile first.</span>';
+
+/* two-tap destructive confirm: first tap arms ("Sure?"), second fires */
+function arm(btn, fn) {
+	if (btn.dataset.armed) {
+		delete btn.dataset.armed;
+		btn.textContent = btn._label;
+		btn.classList.remove('armed');
+		fn();
 		return;
 	}
-	document.getElementById('sb-links').value = '';
-	saveProfile(PROF_ACTIVE);
+	btn._label = btn.textContent;
+	btn.dataset.armed = '1';
+	btn.textContent = '<%:Sure?%>';
+	btn.classList.add('armed');
+	setTimeout(function() {
+		if (btn.dataset.armed) {
+			delete btn.dataset.armed;
+			btn.textContent = btn._label;
+			btn.classList.remove('armed');
+		}
+	}, 3000);
+}
+
+/* Show/Hide toggles on every password field */
+function setSecretVisible(input, visible) {
+	input.type = visible ? 'text' : 'password';
+	var b = input.parentNode.querySelector('.tw-secret-toggle');
+	if (!b) return;
+	b.textContent = visible ? '<%:Hide%>' : '<%:Show%>';
+	b.setAttribute('aria-label', visible ? '<%:Hide value%>' : '<%:Show value%>');
+	b.setAttribute('aria-pressed', visible ? 'true' : 'false');
+}
+function hideSecrets(root) {
+	all('.tw-secret input', root).forEach(function(i) { setSecretVisible(i, false); });
+}
+all('input[type="password"]').forEach(function(input) {
+	var wrap = mk('div', 'tw-secret'), b = mk('button', 'tw-secret-toggle');
+	input.parentNode.insertBefore(wrap, input);
+	wrap.appendChild(input);
+	b.type = 'button';
+	b.setAttribute('aria-controls', input.id);
+	b.addEventListener('click', function() { setSecretVisible(input, input.type === 'password'); });
+	wrap.appendChild(b);
+	setSecretVisible(input, false);
 });
-document.getElementById('btn-prof-new').addEventListener('click', function() {
-	clearProfForm();
-	PROF_ID = '';
-	showProfTab('wireguard');
-	document.getElementById('prof-edit').style.display = 'block';
-	document.getElementById('prof-name').focus();
-});
-function saveProfile(use) {
-	var m = document.getElementById('prof-msg');
-	m.textContent = 'saving…';
-	var d = { id: PROF_ID, name: document.getElementById('prof-name').value,
-		type: PROF_MODE, use: use ? '1' : '0' };
-	['private_key', 'addresses', 'dns', 'peer_public_key', 'preshared_key',
-		'endpoint_host', 'endpoint_port'].forEach(function(k) {
-		d['wg_' + k] = document.getElementById('wg-' + k).value; });
-	d.ovpn_config = document.getElementById('ovpn-config').value;
-	d.ovpn_username = document.getElementById('ovpn-username').value;
-	d.ovpn_password = document.getElementById('ovpn-password').value;
-	d.sub_url = document.getElementById('sb-sub').value;
-	d.links = document.getElementById('sb-links').value;
-	var sel = document.querySelector('input[name=sb-server]:checked');
-	d.server = sel ? sel.value : '';
-	post('/profile_save', d).then(function(j) {
-		if (j.error) { m.innerHTML = '<span class="tw-bad">' + esc(j.error) + '</span>'; return; }
-		if (j.saved) { PROF_ID = j.saved; document.getElementById('prof-id').value = j.saved; }
-		var extra = j.mode ? ' (' + j.mode + (j.profile ? ': ' + j.profile : '') + ')' : '';
-		m.innerHTML = '<span class="tw-ok">' + (use ? 'saved & active' : 'saved') + esc(extra) + '</span>' +
-			(j.warning ? ' <span class="tw-warn">' + esc(j.warning) + '</span>' : '');
-		document.getElementById('sb-links').value = '';
-		document.getElementById('ovpn-config').value = '';
-		refreshProfiles(); refreshStatus();
-		if (PROF_ID) {
-			post('/profiles', {}).then(function(pl) {
-				(pl.profiles || []).forEach(function(p) {
-					if (p.id === PROF_ID) editProfile(p);
-				});
-			});
+
+function ago(ts) {
+	var s = Math.max(0, Math.floor(Date.now() / 1000) - (ts || 0));
+	if (s < 90) return '<%:just now%>';
+	if (s < 5400) return '<%:%d minutes ago%>'.replace('%d', Math.floor(s / 60));
+	if (s < 129600) return '<%:%d hours ago%>'.replace('%d', Math.floor(s / 3600));
+	return '<%:%d days ago%>'.replace('%d', Math.floor(s / 86400));
+}
+function emptyState(text) { return '<div class="tw-empty">' + esc(text) + '</div>'; }
+
+/* ---- navigation: tabs, deep links from tiles and the next-step card ---- */
+function focusCard(id) {
+	var c = el(id);
+	if (!c) return;
+	setTimeout(function() {
+		c.scrollIntoView({ behavior: 'smooth', block: 'start' });
+		c.classList.remove('tw-focus');
+		void c.offsetWidth;
+		c.classList.add('tw-focus');
+		setTimeout(function() { c.classList.remove('tw-focus'); }, 1400);
+	}, 70);
+}
+function showPanel(name, focus) {
+	all('.tw-panel').forEach(function(p) {
+		var on = p.getAttribute('data-view') === name;
+		p.hidden = !on;
+		if (on) {
+			p.classList.remove('is-entering');
+			void p.offsetWidth;
+			p.classList.add('is-entering');
 		}
 	});
+	all('.tw-nav [data-panel]').forEach(function(b) {
+		b.setAttribute('aria-selected', b.getAttribute('data-panel') === name ? 'true' : 'false');
+	});
+	if (focus) focusCard(focus); else window.scrollTo(0, 0);
+	if (name === 'overview') {
+		refreshUpstream(); checkCaptive(); checkHealth();
+	}
+	/* landing on Internet with no link: scan right away, don't wait */
+	if (name === 'internet' && !CUR_WIFI.up && LAST_SCAN === null && !el('btn-scan').disabled)
+		loadScan();
+	if (name === 'wifi')
+		refreshQr();
 }
-document.getElementById('btn-prof-save').addEventListener('click', function() { saveProfile(false); });
-document.getElementById('btn-prof-use').addEventListener('click', function() { saveProfile(true); });
-function activateProfile(id) {
-	var m = document.getElementById('vpn-msg');
-	m.textContent = 'applying…';
-	post('/profile_activate', { id: id }).then(function(j) {
-		m.innerHTML = j.error
-			? '<span class="tw-bad">' + esc(j.error) + '</span>'
-			: '<span class="tw-ok">active: ' + esc(j.profile || j.mode || '') + '</span>' +
-				(j.warning ? ' <span class="tw-warn">' + esc(j.warning) + '</span>' : '');
-		refreshProfiles(); refreshStatus();
+all('[data-panel]').forEach(function(b) {
+	b.addEventListener('click', function() { showPanel(b.getAttribute('data-panel')); });
+});
+/* read at click time: some targets change with state (VPN tile) */
+all('[data-go]').forEach(function(b) {
+	b.addEventListener('click', function() {
+		showPanel(b.getAttribute('data-go'), b.getAttribute('data-focus'));
+	});
+});
+
+/* ---- overview: one state object drives tiles, tab dots and next step ---- */
+var STATE = { up: null, active: '', wifiSsid: '', net: '', loginUrl: '',
+	profiles: null, health: null, wifi: null };
+var NEXT_ACTION = null;
+function activeProfile() {
+	var a = null;
+	(STATE.profiles || []).forEach(function(p) { if (p.active) a = p; });
+	return a;
+}
+function defaultPasswords() {
+	var w = STATE.wifi;
+	return !!w && ((w.mgmt_key || '').indexOf('please-change') >= 0 ||
+		(w.vault_key || '').indexOf('please-change') >= 0);
+}
+function setKind(node, kind) {
+	node.classList.remove('is-good', 'is-warn', 'is-bad');
+	if (kind) node.classList.add('is-' + kind);
+}
+function tileState(name, kind, label, main) {
+	setKind(el('tile-' + name), kind);
+	el('st-' + name + '-label').textContent = label;
+	el('st-' + name).textContent = main;
+}
+function modeLabel(m) {
+	return m === 'wireguard' ? 'WireGuard' : m === 'openvpn' ? 'OpenVPN' :
+		m === 'singbox' ? '<%:Proxy%>' : (m || '');
+}
+function upName(a) {
+	return a === 'wwan' ? '<%:Wi-Fi%>' : a === 'wan' ? '<%:Ethernet cable%>' : (a || '<%:none%>');
+}
+/* verdict -> [kind, headline] shared by both protection cards */
+function verdictHead(v) {
+	return v === 'healthy' ? ['good', '<%:Protection is working%>']
+		: v === 'disabled' ? ['warn', '<%:Protection is off%>']
+		: v === 'down' ? ['bad', '<%:The VPN is not working%>']
+		: v === 'no-egress' ? ['bad', '<%:The VPN is connected, but nothing gets through%>']
+		: v === 'leaking' ? ['bad', '<%:Private traffic is leaking!%>']
+		: ['', '<%:Checking…%>'];
+}
+function setGuide(kind, icon, title, text, label, action) {
+	setKind(el('next-card'), kind);
+	setKind(el('nav-overview'), kind);
+	el('next-icon').textContent = icon;
+	el('next-title').textContent = title;
+	el('next-text').textContent = text;
+	el('next-action').textContent = label;
+	el('next-action').disabled = !action;
+	NEXT_ACTION = action;
+}
+el('next-action').addEventListener('click', function() {
+	var a = NEXT_ACTION;
+	if (!a) return;
+	if (a.href) window.open(a.href, '_blank', 'noopener');
+	else if (a.fn) a.fn(el('next-action'));
+	else showPanel(a.panel, a.focus);
+});
+function updateGuide() {
+	var s = STATE, act = activeProfile(), v = s.health ? s.health.verdict || '' : '';
+	var checking = '<%:Checking…%>';
+	if (s.up === null)
+		return setGuide('', '…', '<%:Checking your setup…%>', '<%:This will only take a moment.%>', checking, null);
+	if (!s.up)
+		return setGuide('bad', '⌁', '<%:Connect this router%>',
+			'<%:Choose the Wi-Fi where you are staying, or plug in a cable.%>',
+			'<%:Choose Wi-Fi%>', { panel: 'internet', focus: 'card-networks' });
+	if (!s.net)
+		return setGuide('', '…', '<%:Checking internet access…%>', '<%:The router is connected; checking that the internet answers.%>', checking, null);
+	if (s.net === 'captive')
+		return setGuide('warn', '↗', '<%:One quick sign-in%>',
+			'<%:This network needs its hotel or café sign-in page before it can go online.%>',
+			'<%:Open sign-in page%>',
+			s.loginUrl ? { href: s.loginUrl } : { panel: 'internet', focus: 'card-access' });
+	if (s.net !== 'online')
+		return setGuide('bad', '!', '<%:Internet needs attention%>',
+			'<%:The router is connected, but the internet is not responding yet.%>',
+			'<%:See what is wrong%>', { panel: 'internet', focus: 'card-access' });
+	if (s.profiles === null)
+		return setGuide('', '…', '<%:Checking protection…%>', '<%:Your internet is working. Now checking the private network.%>', checking, null);
+	if (!act) {
+		if (!s.profiles.length)
+			return setGuide('warn', '◇', '<%:Add private protection%>',
+				'<%:Add the VPN setup your provider gave you. The private Wi-Fi stays safely offline until then.%>',
+				'<%:Choose protection%>', { panel: 'privacy', focus: 'card-protection-choices' });
+		if (s.profiles.length === 1) {
+			var only = s.profiles[0];
+			return setGuide('warn', '◇', '<%:Turn on your VPN%>',
+				'<%:The private Wi-Fi is offline until a VPN is on.%> (' + only.name + ')',
+				'<%:Turn on VPN%>', { fn: function(b) { activateProfile(only.id, b, 'vpn-msg'); } });
+		}
+		var native = s.profiles.some(function(p) { return p.type !== 'singbox'; });
+		return setGuide('warn', '◇', '<%:Choose a VPN%>',
+			'<%:The private Wi-Fi is offline until one of your VPNs is on.%>',
+			'<%:Choose a VPN%>', { panel: 'privacy', focus: native ? 'card-vpn-files' : 'card-subscriptions' });
+	}
+	if (!v)
+		return setGuide('', '…', '<%:Checking protection…%>', act.name, checking, null);
+	if (v !== 'healthy')
+		return setGuide('bad', '!', v === 'leaking' ? '<%:Private traffic is leaking%>' : '<%:Restore private internet%>',
+			v === 'leaking'
+				? '<%:Stop browsing privately until this clears — traffic is escaping onto the local network.%>'
+				: '<%:Your private Wi-Fi is safely blocked because its protection needs attention.%>',
+			'<%:Fix protection%>', { panel: 'privacy', focus: 'card-health' });
+	if (defaultPasswords())
+		return setGuide('warn', '⚿', '<%:Change the default Wi-Fi passwords%>',
+			'<%:Everything works. One last step: replace the default passwords so nobody else can join.%>',
+			'<%:Change passwords%>', { panel: 'wifi' });
+	var vs = s.wifi && s.wifi.vault_ssid;
+	setGuide('good', '✓', '<%:You’re ready%>',
+		vs ? '<%:Join%> “' + vs + '” <%:on your phone or computer for private internet.%>'
+			: '<%:Your private network is protected and ready to use.%>',
+		'<%:View protection%>', { panel: 'privacy', focus: 'card-health' });
+}
+function updateOverview() {
+	var s = STATE, act = activeProfile(), v = s.health ? s.health.verdict || '' : '';
+	/* internet link */
+	if (s.up === null)
+		tileState('wan', '', '<%:Checking%>', '<%:Looking for internet%>');
+	else if (s.up)
+		tileState('wan', 'good', '<%:Connected%>', s.active === 'wan' ? '<%:Ethernet cable%>' : (s.wifiSsid || '<%:Wi-Fi%>'));
+	else
+		tileState('wan', 'bad', '<%:Not connected%>', '<%:No Wi-Fi or cable yet%>');
+	/* access */
+	var nk = s.net === 'online' ? 'good' : s.net === 'captive' ? 'warn' : s.net ? 'bad' : '';
+	if (!s.net)
+		tileState('net', '', '<%:Checking%>', '<%:Checking access%>');
+	else if (s.net === 'online')
+		tileState('net', 'good', '<%:Online%>', '<%:Internet is working%>');
+	else if (s.net === 'captive')
+		tileState('net', 'warn', '<%:Action needed%>', '<%:Hotel sign-in required%>');
+	else
+		tileState('net', 'bad', '<%:Offline%>', '<%:No internet access%>');
+	setKind(el('nav-internet'), s.up === false ? 'bad' : nk);
+	/* protection */
+	var vk = '';
+	if (s.profiles === null) {
+		tileState('vpn', '', '<%:Checking%>', '<%:Checking protection%>');
+	} else if (!act) {
+		vk = 'warn';
+		tileState('vpn', vk, s.profiles.length ? '<%:Off%>' : '<%:Not set up%>',
+			s.profiles.length ? '<%:Private Wi-Fi is offline%>' : '<%:Choose a VPN or proxy%>');
+	} else if (v === 'healthy') {
+		vk = 'good';
+		tileState('vpn', vk, '<%:Protected%>', act.name);
+	} else if (!v) {
+		tileState('vpn', '', '<%:Checking%>', act.name);
+	} else {
+		vk = 'bad';
+		tileState('vpn', vk, '<%:Needs attention%>', act.name);
+	}
+	el('tile-vpn').setAttribute('data-focus', act ? 'card-health' : 'card-protection-choices');
+	setKind(el('nav-privacy'), vk);
+	/* own networks */
+	var dp = defaultPasswords();
+	el('hero-defpw').hidden = !dp;
+	el('wifi-defpw').hidden = !dp;
+	setKind(el('nav-wifi'), s.wifi ? (dp ? 'warn' : 'good') : '');
+	updateGuide();
+}
+
+/* ---- internet: connection preference + current wi-fi ---- */
+var CUR_WIFI = { up: false, ssid: '', signal: null, used: false };
+var LAST_NET = '';
+/* resolves true when the router answered; on failure the page keeps what
+ * it showed (a join briefly drops this device off the router's Wi-Fi) */
+function refreshUpstream() {
+	return post('/upstream', {}).then(function(j) {
+		if (j.error) {
+			if (STATE.up === null) el('up-status').textContent = errMsg(j);
+			return false;
+		}
+		var w = j.wifi || {}, c = j.wired || {};
+		el('up-status').textContent = [
+			'Wi-Fi: ' + (w.up ? (w.ssid || '<%:connected%>') + (w.ip ? ' (' + w.ip + ')' : '') : '<%:not connected%>'),
+			'<%:Cable:%> ' + (c.carrier ? '<%:plugged in%>' + (c.up && c.ip ? ' (' + c.ip + ')' : '') : '<%:unplugged%>'),
+			'<%:Using:%> ' + upName(j.active)
+		].join(' · ');
+		el('up-select').value = j.choice || 'auto';
+		CUR_WIFI = { up: !!w.up, ssid: w.ssid || '', signal: w.signal, used: j.active === 'wwan' };
+		STATE.up = !!j.active;
+		STATE.active = j.active || '';
+		STATE.wifiSsid = w.ssid || '';
+		showCurrentWifi();
+		paintSaved(LAST_SAVED);
+		/* re-badge the nearby list, unless the user is typing a password */
+		if (LAST_SCAN && !PICK) paintScan(LAST_SCAN);
+		updateOverview();
+		return true;
 	});
 }
-document.getElementById('btn-vpn-off').addEventListener('click', function() {
-	activateProfile('');
+function linkKey() { return [STATE.active, CUR_WIFI.up, CUR_WIFI.ssid].join('\n'); }
+/* After a join or disconnect, show the result at once, then re-check until
+ * the router confirms it: this device may be reconnecting to the router's
+ * own Wi-Fi (its radio restarts when the uplink changes channel), and
+ * calls made meanwhile fail. */
+var SETTLE_TIMER = null;
+function settleWifi(want, then) {
+	var delays = [1500, 4000, 8000, 15000], i = 0;
+	if (SETTLE_TIMER) clearTimeout(SETTLE_TIMER);
+	function step() {
+		Promise.all([refreshUpstream(), refreshSaved()]).then(function() {
+			var done = want.up
+				? CUR_WIFI.up && CUR_WIFI.ssid === want.ssid && SAVED_SET[want.ssid]
+				: !CUR_WIFI.up;
+			var last = done || ++i >= delays.length;
+			SETTLE_TIMER = last ? null : setTimeout(step, delays[i]);
+			if (last && then) then(!!done);
+		});
+	}
+	SETTLE_TIMER = setTimeout(step, delays[0]);
+}
+/* keep the page current without a reload: a light link check while the
+ * page is on screen; access and saved networks follow when the link changes */
+function heartbeat() {
+	if (document.hidden) return;
+	var before = linkKey();
+	refreshUpstream().then(function(ok) {
+		if (ok && linkKey() !== before) { refreshSaved(); checkCaptive(); checkHealth(); }
+	});
+}
+setInterval(heartbeat, 20000);
+document.addEventListener('visibilitychange', heartbeat);
+window.addEventListener('online', refreshAll);
+el('btn-upstream').addEventListener('click', function() {
+	note('up-msg', '<%:Applying…%>');
+	withBusy(el('btn-upstream'), post('/upstream', { mode: el('up-select').value }), true)
+	.then(function(j) {
+		if (j.error) { note('up-msg', errMsg(j), 'bad'); return; }
+		var s = '<%:Saved. Using%> ' + upName(j.active) + '.';
+		if (j.subnet && j.subnet.changed)
+			s += ' <%:The local network moved to%> ' + j.subnet.lan + '.';
+		note('up-msg', s, 'good');
+		if (j.internet) showCaptive(j.internet);
+		refreshAll();
+	});
 });
-document.getElementById('btn-wg-parse').addEventListener('click', function() {
-	var t = document.getElementById('wg-paste').value, sec = '';
-	t.split('\n').forEach(function(line) {
+/* dBm -> phone-style signal bars (-999/absent = no reading) */
+function sigDbm(dbm) {
+	var s = parseInt(dbm, 10);
+	return (isNaN(s) || s <= -999) ? null : s;
+}
+function sigText(dbm) {
+	var s = sigDbm(dbm);
+	if (s == null) return '—';
+	return (s >= -55 ? '<%:Excellent%>' : s >= -67 ? '<%:Good%>' : s >= -75 ? '<%:Fair%>' : '<%:Weak%>') +
+		' · ' + s + ' dBm';
+}
+function sigHtml(dbm) {
+	var s = sigDbm(dbm);
+	var lvl = s == null ? 0 : s >= -55 ? 4 : s >= -67 ? 3 : s >= -75 ? 2 : 1;
+	var hs = [5, 8, 11, 14], out = '';
+	for (var i = 0; i < 4; i++)
+		out += '<rect x="' + (i * 5) + '" y="' + (15 - hs[i]) + '" width="3" height="' + hs[i] +
+			'" rx="1" fill="' + (i < lvl ? '#172235' : '#d5dae1') + '"/>';
+	return '<svg width="18" height="15" viewBox="0 0 18 15" aria-hidden="true">' + out + '</svg>' +
+		esc(sigText(dbm));
+}
+function bandLabel(b) { return b === '5g' ? '5 GHz' : b === '2g' ? '2.4 GHz' : ''; }
+function secLabel(e) { return (!e || e === 'none') ? '<%:Open%>' : e; }
+function showCurrentWifi() {
+	var c = CUR_WIFI;
+	el('current-wifi').classList.toggle('is-connected', c.up);
+	el('btn-disconnect').hidden = !c.up;
+	var st = el('current-wifi-state');
+	if (c.up) {
+		el('current-wifi-name').textContent = c.ssid || '<%:Wi-Fi connected%>';
+		el('current-wifi-detail').textContent = [sigText(c.signal),
+			c.used ? '<%:Used for internet now%>' : '<%:Connected; the cable is preferred%>'].join(' · ');
+		st.textContent = c.used ? '<%:Connected%>' : '<%:Standby%>';
+		setKind(st, c.used ? 'good' : 'warn');
+	} else {
+		el('current-wifi-name').textContent = '<%:No Wi-Fi connected%>';
+		el('current-wifi-detail').textContent = LAST_NET
+			? '<%:Last network:%> ' + LAST_NET
+			: '<%:Scan nearby networks or reconnect a remembered one.%>';
+		st.textContent = '<%:Not connected%>';
+		setKind(st, '');
+	}
+}
+/* disconnect the wi-fi uplink (stays off until you join again) */
+el('btn-disconnect').addEventListener('click', function() {
+	var b = el('btn-disconnect');
+	arm(b, function() {
+		withBusy(b, post('/wlan_disconnect', {}), true).then(function(j) {
+			if (j.error) { toast(errMsg(j)); return; }
+			toast(j.ssid ? '<%:Disconnected from%> ' + j.ssid : '<%:Wi-Fi disconnected%>');
+			LAST_NET = j.ssid || CUR_WIFI.ssid;
+			CUR_WIFI = { up: false, ssid: '', signal: null, used: false };
+			if (STATE.active === 'wwan') { STATE.active = ''; STATE.up = false; }
+			showCurrentWifi();
+			paintSaved(LAST_SAVED);
+			if (LAST_SCAN && !PICK) paintScan(LAST_SCAN);
+			updateOverview();
+			refreshAll();
+			settleWifi({ up: false });
+		});
+	});
+});
+
+/* ---- internet: scan + join (form opens right under the chosen row) ---- */
+var PICK = null, LAST_SCAN = null;
+var JOIN_HOME = el('join-box').parentNode, JOIN_NEXT = el('join-box').nextSibling;
+function closeJoinBox() {
+	var box = el('join-box');
+	all('.tw-network.is-picked').forEach(function(r) { r.classList.remove('is-picked'); });
+	if (box.parentNode !== JOIN_HOME) JOIN_HOME.insertBefore(box, JOIN_NEXT);
+	box.hidden = true;
+	el('join-key').value = '';
+	hideSecrets(box);
+	note('join-msg', '');
+	PICK = null;
+}
+function openJoinBox(row, n) {
+	closeJoinBox();
+	var box = el('join-box'), open = n.secured === false;
+	PICK = { ssid: n.ssid, band: n.band || '', enc: n.encryption || '', bssid: n.bssid || '' };
+	row.classList.add('is-picked');
+	row.parentNode.insertBefore(box, row.nextSibling);
+	el('join-ssid').textContent = '<%:Connect to%> ' + n.ssid + (bandLabel(n.band) ? ' (' + bandLabel(n.band) + ')' : '');
+	el('join-key-field').hidden = open;
+	el('join-open').hidden = !open;
+	box.hidden = false;
+	if (open) el('btn-join').focus(); else el('join-key').focus();
+}
+el('btn-join-cancel').addEventListener('click', closeJoinBox);
+function loadScan() {
+	note('scan-msg', '<%:Looking for nearby networks…%>');
+	return withBusy(el('btn-scan'), Promise.all([post('/scan', {}), post('/wlan_saved', {})]), true)
+	.then(function(r) {
+		var j = r[0] || {}, s = r[1] || {};
+		if (j.error) { note('scan-msg', errMsg(j), 'bad'); return; }
+		var cur = j.current || {};
+		LAST_NET = (cur.saved && cur.saved !== '__unset__') ? cur.saved : '';
+		showCurrentWifi();
+		if (!s.error) paintSaved(s.saved || []);
+		note('scan-msg', j.partial ? '<%:Some bands were busy — tap Scan to retry.%>' : '', 'warn');
+		paintScan(j.networks || []);
+	});
+}
+el('btn-scan').addEventListener('click', loadScan);
+/* connected first, then remembered, then the rest — strongest first in each */
+function paintScan(nets) {
+	LAST_SCAN = nets;
+	closeJoinBox();
+	var list = el('net-list');
+	list.innerHTML = '';
+	function rank(n) {
+		var ssid = n.ssid || '';
+		if (CUR_WIFI.up && ssid !== '' && ssid === CUR_WIFI.ssid) return 0;
+		if (ssid !== '' && SAVED_SET[ssid]) return 1;
+		return 2;
+	}
+	nets.slice().sort(function(a, b) {
+		return (rank(a) - rank(b)) || ((sigDbm(b.signal) || -999) - (sigDbm(a.signal) || -999));
+	}).forEach(function(n) {
+		var ssid = n.ssid || '';
+		var hidden = ssid.indexOf('(hidden)') === 0;
+		var isCur = rank(n) === 0, isSaved = rank(n) === 1;
+		var row = mk('div', 'tw-network' + (isCur ? ' is-active' : ''));
+		var meta = mk('div', 'tw-network-meta');
+		meta.appendChild(mk('strong', null, (isCur ? '● ' : '') + ssid));
+		meta.appendChild(mk('small', null, [bandLabel(n.band), secLabel(n.encryption),
+			isSaved ? '<%:Remembered%>' : ''].filter(Boolean).join(' · ')));
+		var acts = mk('div', 'tw-actions');
+		var sig = mk('span', 'tw-signal');
+		sig.innerHTML = sigHtml(n.signal);
+		acts.appendChild(sig);
+		if (isCur) {
+			acts.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
+		} else if (!hidden) {
+			if (isSaved) {
+				/* the band seen now, not the one saved last time */
+				acts.appendChild(button('<%:Connect%>', 'tw-button-primary', function(b) {
+					rejoinSaved(ssid, n.band || '', b);
+				}));
+			}
+			acts.appendChild(button(isSaved ? '<%:Password…%>' : '<%:Connect…%>', '', function() {
+				openJoinBox(row, n);
+			}));
+		}
+		row.appendChild(meta); row.appendChild(acts);
+		list.appendChild(row);
+	});
+	if (!nets.length)
+		list.innerHTML = emptyState('<%:No Wi-Fi networks found. Try scanning again.%>');
+}
+function afterJoin(j) {
+	var s = '<%:Connected to%> ' + (j.ssid || '') + '.';
+	if (j.subnet && j.subnet.changed)
+		s += ' <%:That network clashed with ours, so the local network moved to%> ' +
+			j.subnet.lan + ' / ' + j.subnet.vault + '.';
+	toast(s);
+	note('scan-msg', s, 'good');
+	/* the router has linked and remembered it: show that now */
+	var seen = (LAST_SCAN || []).filter(function(n) { return n.ssid === j.ssid; })
+		.sort(function(a, b) { return (sigDbm(b.signal) || -999) - (sigDbm(a.signal) || -999); })[0];
+	CUR_WIFI = { up: true, ssid: j.ssid || '', signal: seen ? seen.signal : null,
+		used: STATE.active !== 'wan' };
+	STATE.up = true;
+	STATE.wifiSsid = CUR_WIFI.ssid;
+	if (STATE.active !== 'wan') STATE.active = 'wwan';
+	if (!LAST_SAVED.some(function(n) { return n.ssid === j.ssid; }))
+		LAST_SAVED = [{ ssid: j.ssid, band: seen ? seen.band : '',
+			last_used: Math.floor(Date.now() / 1000) }].concat(LAST_SAVED);
+	showCurrentWifi();
+	paintSaved(LAST_SAVED);
+	if (LAST_SCAN) paintScan(LAST_SCAN);
+	if (j.internet) showCaptive(j.internet); else updateOverview();
+	refreshAll();
+	settleWifi({ up: true, ssid: j.ssid || '' });
+}
+/* The join reply never arrived: usually this device dropped off the
+ * router's Wi-Fi while the radio retuned, and the join went on without us.
+ * Ask the router what happened instead of reporting a failure. */
+function confirmJoin(ssid, msgId) {
+	note(msgId, '<%:Lost contact with the router while connecting — normal when its Wi-Fi retunes. Checking whether it worked…%>', 'warn');
+	settleWifi({ up: true, ssid: ssid }, function(ok) {
+		if (!ok) {
+			note(msgId, '<%:Could not confirm the connection. Check the password and try again.%>', 'bad');
+			return;
+		}
+		if (PICK && PICK.ssid === ssid) closeJoinBox();
+		if (LAST_SCAN && !PICK) paintScan(LAST_SCAN);
+		note('scan-msg', '<%:Connected to%> ' + ssid + '.', 'good');
+		toast('<%:Connected to%> ' + ssid + '.');
+		checkCaptive();
+		checkHealth();
+	});
+}
+el('btn-join').addEventListener('click', function() {
+	if (!PICK) return;
+	var ssid = PICK.ssid;
+	note('join-msg', '<%:Connecting — this can take a few seconds…%>');
+	withBusy(el('btn-join'), post('/join', { ssid: ssid, key: el('join-key').value,
+		band: PICK.band, enc: PICK.enc, bssid: PICK.bssid }), true)
+	.then(function(j) {
+		if (j.error === 'network') { confirmJoin(ssid, 'join-msg'); return; }
+		if (!j.linked) { note('join-msg', errMsg(j), 'bad'); return; }
+		closeJoinBox();
+		afterJoin(j);
+	});
+});
+
+/* ---- internet: remembered networks ---- */
+var SAVED_SET = {}, LAST_SAVED = [];
+function refreshSaved() {
+	return post('/wlan_saved', {}).then(function(j) {
+		if (!j.error) paintSaved(j.saved || []);
+	});
+}
+function paintSaved(list) {
+	var box = el('saved-list');
+	box.innerHTML = '';
+	SAVED_SET = {};
+	LAST_SAVED = list;
+	if (!list.length) {
+		box.innerHTML = emptyState('<%:Networks you join are remembered here for one-tap reconnect.%>');
+		return;
+	}
+	list.forEach(function(n) {
+		SAVED_SET[n.ssid] = 1;
+		var isCur = CUR_WIFI.up && n.ssid === CUR_WIFI.ssid;
+		var row = mk('div', 'tw-network' + (isCur ? ' is-active' : ''));
+		var meta = mk('div', 'tw-network-meta');
+		meta.appendChild(mk('strong', null, (isCur ? '● ' : '') + n.ssid));
+		meta.appendChild(mk('small', null, ['<%:Last connected%> ' + ago(n.last_used),
+			bandLabel(n.band)].filter(Boolean).join(' · ')));
+		var acts = mk('div', 'tw-actions');
+		if (isCur)
+			acts.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
+		else
+			acts.appendChild(button('<%:Connect%>', 'tw-button-primary', function(b) {
+				rejoinSaved(n.ssid, '', b);
+			}));
+		acts.appendChild(button('<%:Forget%>', 'tw-button-danger', function(f) {
+			arm(f, function() {
+				withBusy(f, post('/wlan_forget', { ssid: n.ssid }), true).then(function(r) {
+					if (r.error) { toast(errMsg(r)); return; }
+					toast('<%:Forgotten:%> ' + n.ssid);
+					refreshSaved().then(function() { if (LAST_SCAN && !PICK) paintScan(LAST_SCAN); });
+				});
+			});
+		}));
+		row.appendChild(meta); row.appendChild(acts);
+		box.appendChild(row);
+	});
+}
+/* band: where the scan sees it now; blank = the band saved last time */
+function rejoinSaved(ssid, band, btn) {
+	note('scan-msg', '<%:Connecting to%> ' + ssid + '…');
+	withBusy(btn, post('/wlan_rejoin', { ssid: ssid, band: band }), true).then(function(j) {
+		if (j.error === 'network') { confirmJoin(ssid, 'scan-msg'); return; }
+		if (!j.linked) { note('scan-msg', errMsg(j), 'bad'); toast(errMsg(j)); return; }
+		afterJoin(j);
+	});
+}
+
+/* ---- internet: hotel sign-in (captive portal) ---- */
+var CAPTIVE_TIMER = null;
+function checkCaptive(btn) {
+	var p = post('/captive', {});
+	return (btn ? withBusy(btn, p) : p).then(function(j) {
+		if (!j.error) showCaptive(j);
+	});
+}
+function showCaptive(j) {
+	var box = el('net-status'), badge = el('captive-badge'), portal = el('btn-portal');
+	STATE.net = j.state || 'offline';
+	STATE.loginUrl = j.login_url || '';
+	box.className = 'tw-callout';
+	portal.hidden = true;
+	el('hotel-steps').hidden = STATE.net !== 'captive';
+	if (STATE.net === 'online') {
+		box.classList.add('is-good');
+		box.innerHTML = '<strong><%:You are online.%></strong> <%:No sign-in needed.%>';
+		badge.textContent = '<%:Online%>';
+		setKind(badge, 'good');
+	} else if (STATE.net === 'captive') {
+		box.classList.add('is-warn');
+		box.innerHTML = '<strong><%:This Wi-Fi needs a sign-in.%></strong> ' + esc(j.detail || '');
+		portal.href = j.login_url || '#';
+		portal.hidden = !j.login_url;
+		badge.textContent = '<%:Sign in%>';
+		setKind(badge, 'warn');
+	} else {
+		box.classList.add('is-bad');
+		box.innerHTML = '<strong><%:No internet yet.%></strong> ' + esc(j.reason || j.state || '');
+		badge.textContent = '<%:Offline%>';
+		setKind(badge, 'bad');
+	}
+	/* keep watching while the user signs in on another tab or device */
+	if (CAPTIVE_TIMER) { clearTimeout(CAPTIVE_TIMER); CAPTIVE_TIMER = null; }
+	if (STATE.net === 'captive')
+		CAPTIVE_TIMER = setTimeout(function() {
+			CAPTIVE_TIMER = null;
+			if (!document.hidden) checkCaptive();
+		}, 15000);
+	updateOverview();
+}
+el('btn-recheck').addEventListener('click', function() { checkCaptive(el('btn-recheck')); });
+/* back from the sign-in tab: check at once instead of waiting for the timer */
+document.addEventListener('visibilitychange', function() {
+	if (!document.hidden && STATE.net === 'captive') checkCaptive();
+});
+
+/* ---- privacy: tunnel health, verdict first, tech details folded away ---- */
+function showHealth(j) {
+	STATE.health = j;
+	var v = j.verdict || '', head = verdictHead(v);
+	var detail = '';
+	if (j.leak)
+		detail = '<%:Stop browsing privately until this clears — traffic is escaping onto the local network.%>';
+	else if (v === 'disabled')
+		detail = '<%:Turn on a VPN to protect the private network.%>';
+	else if (v === 'down' && j.kill_holding)
+		detail = '<%:Safety lock is on: private devices stay offline until the VPN recovers.%>';
+	else if (v === 'healthy')
+		detail = '<%:Private traffic leaves through a different public address than direct traffic.%>';
+	else if (j.tunnel_detail)
+		detail = j.tunnel_detail;
+	['health', 'overview-health'].forEach(function(id) {
+		var box = el(id);
+		box.className = 'tw-callout' + (head[0] ? ' is-' + head[0] : '');
+		box.innerHTML = '<strong>' + esc(head[1]) + '.</strong> ' + esc(detail);
+	});
+	el('health-tunnel').textContent = j.mode && j.mode !== 'off'
+		? modeLabel(j.mode) + ' · ' + (j.tunnel_up ? '<%:up%>' : '<%:down%>') : '<%:Not connected%>';
+	el('health-direct').textContent = j.direct_ip || '—';
+	el('health-private').textContent = j.vault_ip || '—';
+	var tech = [];
+	if (j.tunnel_detail) tech.push(j.tunnel_detail);
+	if (j.vault_dns) tech.push('<%:Private DNS:%> ' + j.vault_dns);
+	if (j.dns_detail) tech.push('<%:DNS through the tunnel:%> ' + j.dns_detail + (j.dns_ok ? ' ✓' : ' ✗'));
+	el('health-tech').textContent = tech.join(' · ') || '—';
+	updateOverview();
+}
+function checkHealth(btn) {
+	var p = post('/health', {});
+	return (btn ? withBusy(btn, p) : p).then(function(j) {
+		if (j.error) {
+			el('health').className = 'tw-callout is-bad';
+			el('health').textContent = errMsg(j);
+			return;
+		}
+		showHealth(j);
+	});
+}
+el('btn-health').addEventListener('click', function() { checkHealth(el('btn-health')); });
+el('btn-health-overview').addEventListener('click', function() { checkHealth(el('btn-health-overview')); });
+
+/* ---- privacy: profiles (VPN files + proxy subscriptions) ---- */
+function refreshProfiles() {
+	return post('/profiles', {}).then(function(j) {
+		if (j.error) { note('files-msg', errMsg(j), 'bad'); return; }
+		var profiles = j.profiles || [];
+		STATE.profiles = profiles;
+		renderNative(profiles.filter(function(p) { return p.type !== 'singbox'; }));
+		renderSubs(profiles.filter(function(p) { return p.type === 'singbox'; }));
+		updateOverview();
+	});
+}
+function activateProfile(id, btn, msgId) {
+	note(msgId, id ? '<%:Starting the tunnel…%>' : '<%:Turning the VPN off…%>');
+	withBusy(btn, post('/profile_activate', { id: id }), true).then(function(j) {
+		if (j.error) { note(msgId, errMsg(j), 'bad'); toast(errMsg(j)); }
+		else if (j.warning) note(msgId, j.warning, 'warn');
+		else if (id) note(msgId, '<%:VPN on:%> ' + (j.profile || modeLabel(j.mode)), 'good');
+		else note(msgId, '<%:VPN off — private Wi-Fi devices are offline.%>', 'good');
+		refreshProfiles(); checkHealth();
+	});
+}
+el('btn-vpn-off').addEventListener('click', function() {
+	activateProfile('', el('btn-vpn-off'), 'vpn-msg');
+});
+function deleteProfile(p, btn, msgId) {
+	arm(btn, function() {
+		withBusy(btn, post('/profile_delete', { id: p.id }), true).then(function(j) {
+			if (j.error) { note(msgId, errMsg(j), 'bad'); return; }
+			note(msgId, '<%:Deleted%> ' + p.name + '.', 'good');
+			refreshProfiles();
+			if (p.active) checkHealth();
+		});
+	});
+}
+function renderNative(list) {
+	var box = el('prof-list');
+	box.innerHTML = '';
+	list.forEach(function(p) {
+		var row = mk('div', 'tw-profile' + (p.active ? ' is-active' : ''));
+		var meta = mk('div', 'tw-profile-meta');
+		meta.appendChild(mk('strong', null, (p.active ? '● ' : '') + p.name));
+		meta.appendChild(mk('small', null, modeLabel(p.type) + (p.summary ? ' · ' + p.summary : '')));
+		var acts = mk('div', 'tw-actions');
+		if (p.active)
+			acts.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
+		else
+			acts.appendChild(button('<%:Connect%>', 'tw-button-primary', function(b) {
+				activateProfile(p.id, b, 'files-msg');
+			}));
+		acts.appendChild(button('<%:Edit%>', '', function() { editNative(p); }));
+		acts.appendChild(button('<%:Delete%>', 'tw-button-danger', function(b) {
+			deleteProfile(p, b, 'files-msg');
+		}));
+		row.appendChild(meta); row.appendChild(acts);
+		box.appendChild(row);
+	});
+	if (!list.length)
+		box.innerHTML = emptyState('<%:No VPN files yet.%>');
+}
+
+/* ---- privacy: subscriptions and their endpoints ----
+ * Probe results, "connect anyway" choices and open groups are kept by
+ * profile + endpoint so a re-render never wipes them. */
+var PROBES = {}, FORCE = {}, OPEN_SUBS = {};
+function epKey(id, tag) { return id + '\n' + tag; }
+function forgetProbes(id) {
+	[PROBES, FORCE].forEach(function(m) {
+		Object.keys(m).forEach(function(k) { if (k.indexOf(id + '\n') === 0) delete m[k]; });
+	});
+}
+/* Only one speed-test run at a time, page-wide: rapid clicking through
+ * Test buttons (or Test-all plus singles) would otherwise stack up more
+ * concurrent probes than the router handles well. Profile re-renders wait
+ * until the run is over so its progress is not wiped mid-way. */
+var PROBING = 0, PENDING_SUBS = null;
+function startProbing() {
+	if (PROBING) { toast('<%:A speed test is already running%>'); return false; }
+	PROBING = 1;
+	return true;
+}
+function endProbing() {
+	PROBING = 0;
+	if (PENDING_SUBS) {
+		var l = PENDING_SUBS;
+		PENDING_SUBS = null;
+		renderSubs(l);
+	}
+}
+function showProbe(pill, j) {
+	if (!j) {
+		pill.className = 'tw-latency'; pill.textContent = '—'; pill.title = '';
+	} else if (j.pending) {
+		pill.className = 'tw-latency'; pill.textContent = '…'; pill.title = '';
+	} else if (j.ok) {
+		/* UDP is informational (DNS relayed through the endpoint) */
+		var udpBad = j.udp === 'failed';
+		pill.className = 'tw-latency ' + (udpBad || j.latency_ms >= 800 ? 'is-warn'
+			: j.latency_ms < 250 ? 'is-good' : 'is-warn');
+		pill.textContent = j.latency_ms + ' ms' + (udpBad ? ' · <%:no UDP%>' : '');
+		pill.title = 'HTTPS ' + (j.http_code || 'ok') + ' · UDP (DNS): ' +
+			(j.udp === 'ok' ? '<%:works%>' : udpBad ? '<%:failed — calls and games may not work%>' : '<%:not tested%>');
+	} else {
+		pill.className = 'tw-latency is-bad'; pill.textContent = '<%:Failed%>'; pill.title = errMsg(j);
+	}
+}
+function probeOne(p, tag, pill) {
+	var k = epKey(p.id, tag);
+	PROBES[k] = { pending: true };
+	showProbe(pill, PROBES[k]);
+	return post('/probe', { id: p.id, server: tag }).then(function(j) {
+		PROBES[k] = j;
+		showProbe(pill, j);
+		return j;
+	});
+}
+function selectEndpoint(p, tag, btn) {
+	note('subs-msg', '<%:Connecting to%> ' + tag + '…');
+	/* pick the endpoint (re-applies when the profile is in use), then turn
+	 * the profile on if another one (or none) is active */
+	var run = (tag !== p.server ? post('/profile_server', { id: p.id, server: tag })
+		: Promise.resolve({})).then(function(j) {
+		if (j.error || p.active) return j;
+		return post('/profile_activate', { id: p.id });
+	});
+	withBusy(btn, run, true).then(function(j) {
+		if (j.error) { note('subs-msg', errMsg(j), 'bad'); toast(errMsg(j)); return; }
+		delete FORCE[epKey(p.id, tag)];
+		note('subs-msg', '<%:Connected to%> ' + tag + '.' + (j.warning ? ' ' + j.warning : ''),
+			j.warning ? 'warn' : 'good');
+		OPEN_SUBS[p.id] = true;
+		refreshProfiles(); checkHealth();
+	});
+}
+/* Connect tests the endpoint first; on failure the button turns into
+ * "Connect anyway" so a flaky test never locks the user out. */
+function connectEndpoint(p, tag, btn, pill) {
+	var k = epKey(p.id, tag);
+	if (FORCE[k] || !p.has_map) { selectEndpoint(p, tag, btn); return; }
+	if (!startProbing()) return;
+	note('subs-msg', '<%:Testing%> ' + tag + ' <%:before connecting…%>');
+	withBusy(btn, probeOne(p, tag, pill), true).then(function(j) {
+		if (j.ok) {
+			endProbing();
+			selectEndpoint(p, tag, btn);
+			return;
+		}
+		FORCE[k] = 1;
+		btn.textContent = '<%:Connect anyway%>';
+		btn.classList.remove('tw-button-primary');
+		note('subs-msg', tag + ' <%:failed the test:%> ' + errMsg(j) +
+			' <%:Tap “Connect anyway” to use it regardless.%>', 'bad');
+		endProbing();
+	});
+}
+/* e.g. "VLESS · WS · Reality", from the controller's per-tag details */
+var PROTO_NAMES = { vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', shadowsocks: 'Shadowsocks',
+	hysteria2: 'Hysteria2', tuic: 'TUIC', wireguard: 'WireGuard', socks: 'SOCKS', http: 'HTTP' };
+var TRANSPORT_NAMES = { ws: 'WS', grpc: 'gRPC', http: 'HTTP/2', httpupgrade: 'HTTPUpgrade', quic: 'QUIC' };
+function protoLabel(pr) {
+	if (!pr || !pr.type) return '';
+	return [PROTO_NAMES[pr.type] || pr.type,
+		pr.transport ? TRANSPORT_NAMES[pr.transport] || pr.transport : '',
+		pr.security === 'reality' ? 'Reality' : pr.security === 'tls' ? 'TLS' : ''
+	].filter(Boolean).join(' · ');
+}
+function endpointRow(p, tag, eps) {
+	var k = epKey(p.id, tag), active = p.active && p.server === tag;
+	var row = mk('div', 'tw-endpoint' + (active ? ' is-active' : ''));
+	var meta = mk('div', 'tw-endpoint-meta');
+	meta.appendChild(mk('strong', null, (active ? '● ' : '') + tag));
+	var proto = protoLabel((p.protocols || {})[tag]);
+	var sub = [proto, (!p.active && tag === p.server) ? '<%:Selected — used when this subscription is turned on%>' : '']
+		.filter(Boolean).join(' · ');
+	if (sub) meta.appendChild(mk('small', null, sub));
+	var acts = mk('div', 'tw-actions');
+	var pill = mk('span', 'tw-latency');
+	showProbe(pill, PROBES[k]);
+	var test = null;
+	if (p.has_map) {
+		acts.appendChild(pill);
+		test = button('<%:Test%>', '', function(b) {
+			if (!startProbing()) return;
+			withBusy(b, probeOne(p, tag, pill), true).then(function(j) {
+				endProbing();
+				if (!j.ok) toast(tag + ': ' + errMsg(j));
+			});
+		});
+		test.title = '<%:Full connection test: HTTPS, latency and UDP%>';
+		acts.appendChild(test);
+	}
+	if (active) {
+		acts.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
+	} else {
+		var c = button(FORCE[k] ? '<%:Connect anyway%>' : '<%:Connect%>',
+			FORCE[k] ? '' : 'tw-button-primary', function(b) { connectEndpoint(p, tag, b, pill); });
+		acts.appendChild(c);
+	}
+	row.appendChild(meta); row.appendChild(acts);
+	eps.push({ tag: tag, pill: pill, test: test });
+	return row;
+}
+/* test every endpoint in a subscription, 3 at a time to avoid hammering
+ * the router; individual Test buttons are parked while the run lasts */
+function testAll(p, eps, btn, prog) {
+	if (!startProbing()) return;
+	var i = 0, done = 0, ok = 0;
+	eps.forEach(function(e) { if (e.test) e.test.disabled = true; });
+	function update() { prog.textContent = '<%:Testing%> ' + done + ' / ' + eps.length + '…'; }
+	update();
+	function worker() {
+		if (i >= eps.length) return Promise.resolve();
+		var e = eps[i++];
+		return probeOne(p, e.tag, e.pill).then(function(j) {
+			if (j.ok) ok++;
+			done++; update();
+			return worker();
+		});
+	}
+	var workers = [];
+	for (var w = 0; w < Math.min(3, eps.length); w++) workers.push(worker());
+	withBusy(btn, Promise.all(workers), true).then(function() {
+		eps.forEach(function(e) { if (e.test) e.test.disabled = false; });
+		prog.textContent = '';
+		note('subs-msg', p.name + ': ' + ok + ' / ' + eps.length + ' <%:endpoints passed%>',
+			ok === eps.length ? 'good' : 'warn');
+		endProbing();
+	});
+}
+function refreshSub(p, btn) {
+	note('subs-msg', '<%:Updating%> ' + p.name + '…');
+	withBusy(btn, post('/profile_refresh', { id: p.id }), true).then(function(j) {
+		if (j.error) { note('subs-msg', errMsg(j), 'bad'); return; }
+		forgetProbes(p.id);
+		OPEN_SUBS[p.id] = true;
+		note('subs-msg', p.name + ': ' + (j.count != null ? j.count : '?') + ' <%:endpoints%>' +
+			(j.warning ? ' · ' + j.warning : ''), j.warning ? 'warn' : 'good');
+		refreshProfiles();
+		if (p.active) checkHealth();
+	});
+}
+function renderSubs(list) {
+	if (PROBING) { PENDING_SUBS = list; return; }
+	var box = el('sub-list');
+	box.innerHTML = '';
+	list.forEach(function(p) {
+		var srv = Array.isArray(p.servers) ? p.servers : [];
+		var det = mk('details', 'tw-sub-group');
+		det.setAttribute('data-profile-id', p.id);
+		det.open = OPEN_SUBS[p.id] != null ? OPEN_SUBS[p.id] : (p.active || list.length === 1);
+		det.addEventListener('toggle', function() { OPEN_SUBS[p.id] = det.open; });
+		var sum = mk('summary');
+		var title = mk('span', 'tw-sub-title');
+		title.appendChild(mk('strong', null, (p.active ? '● ' : '') + p.name));
+		title.appendChild(mk('small', null, [srv.length + ' <%:endpoints%>',
+			p.sub_url ? '<%:refreshable%>' : '<%:pasted links%>',
+			p.active && p.server ? '<%:using%> ' + p.server : ''].filter(Boolean).join(' · ')));
+		sum.appendChild(title);
+		sum.appendChild(mk('span', 'tw-sub-chevron', '⌄'));
+		det.appendChild(sum);
+		var body = mk('div', 'tw-sub-body');
+		var bar = mk('div', 'tw-sub-toolbar');
+		/* an empty subscription still shows its tools, so it can be fixed */
+		var hint = !srv.length
+			? mk('span', 'tw-warn', '<%:No endpoints yet — check the subscription, then Refresh.%>')
+			: !p.has_map
+				? mk('span', 'tw-warn', '<%:Refresh once to enable endpoint tests.%>')
+				: mk('span', 'tw-muted', '<%:Connect tests an endpoint first. Test all runs three at a time.%>');
+		bar.appendChild(hint);
+		var acts = mk('div', 'tw-actions'), eps = [];
+		var prog = mk('span', 'tw-muted');
+		acts.appendChild(prog);
+		if (p.has_map && srv.length > 1)
+			acts.appendChild(button('<%:Test all%>', '', function(b) { testAll(p, eps, b, prog); }));
+		acts.appendChild(button('↻ <%:Refresh%>', '', function(b) { refreshSub(p, b); }));
+		acts.appendChild(button('<%:Edit%>', '', function() { editSub(p); }));
+		acts.appendChild(button('<%:Delete%>', 'tw-button-danger', function(b) {
+			deleteProfile(p, b, 'subs-msg');
+		}));
+		bar.appendChild(acts);
+		body.appendChild(bar);
+		var epList = mk('div', 'tw-endpoints');
+		srv.forEach(function(tag) { epList.appendChild(endpointRow(p, tag, eps)); });
+		body.appendChild(epList);
+		det.appendChild(body);
+		box.appendChild(det);
+	});
+	if (!list.length)
+		box.innerHTML = emptyState('<%:No subscriptions yet. Add one to see its endpoints here.%>');
+}
+
+/* ---- privacy: VPN file editor (WireGuard / OpenVPN) ---- */
+var PROF_MODE = 'wireguard', PROF_ID = '';
+var WG_KEYS = ['private_key', 'addresses', 'dns', 'peer_public_key', 'preshared_key',
+	'endpoint_host', 'endpoint_port'];
+function setProfMode(mode) {
+	PROF_MODE = mode;
+	all('[data-mode]').forEach(function(b) {
+		b.classList.toggle('is-active', b.getAttribute('data-mode') === mode);
+	});
+	el('tab-wireguard').hidden = mode !== 'wireguard';
+	el('tab-openvpn').hidden = mode !== 'openvpn';
+}
+all('[data-mode]').forEach(function(b) {
+	b.addEventListener('click', function() { setProfMode(b.getAttribute('data-mode')); });
+});
+function clearNative() {
+	PROF_ID = '';
+	el('prof-name').value = '';
+	WG_KEYS.forEach(function(k) {
+		var f = el('wg-' + k);
+		f.value = '';
+		f.placeholder = k === 'addresses' ? '10.0.0.2/32' : k === 'endpoint_port' ? '51820' :
+			k === 'dns' ? '1.1.1.1' : '';
+	});
+	el('wg-paste').value = '';
+	el('ovpn-config').value = '';
+	el('ovpn-config').placeholder = '';
+	el('ovpn-username').value = '';
+	el('ovpn-password').value = '';
+	el('ovpn-password').placeholder = '';
+	hideSecrets(el('prof-edit'));
+	note('prof-msg', '');
+}
+function newNative() {
+	clearNative();
+	el('prof-edit-title').textContent = '<%:Add VPN%>';
+	setProfMode('wireguard');
+	el('prof-edit').hidden = false;
+	el('prof-name').focus();
+}
+function editNative(p) {
+	clearNative();
+	PROF_ID = p.id;
+	el('prof-name').value = p.name || '';
+	el('prof-edit-title').textContent = '<%:Edit%> ' + p.name;
+	setProfMode(p.type);
+	var keep = '<%:Saved — leave blank to keep%>';
+	if (p.type === 'wireguard') {
+		['addresses', 'dns', 'peer_public_key', 'endpoint_host', 'endpoint_port'].forEach(function(k) {
+			if (p[k] != null) el('wg-' + k).value = p[k];
+		});
+		if (p.has_private_key) el('wg-private_key').placeholder = keep;
+		if (p.has_preshared_key) el('wg-preshared_key').placeholder = keep;
+	} else {
+		if (p.username) el('ovpn-username').value = p.username;
+		if (p.has_password) el('ovpn-password').placeholder = keep;
+		if (p.has_config) el('ovpn-config').placeholder = '<%:Config saved — paste to replace%>';
+	}
+	el('prof-edit').hidden = false;
+	focusCard('card-vpn-files');
+	el('prof-name').focus();
+}
+el('btn-prof-new').addEventListener('click', newNative);
+el('btn-prof-cancel').addEventListener('click', function() { el('prof-edit').hidden = true; });
+function saveNative(use) {
+	note('prof-msg', '<%:Saving on the router…%>');
+	var d = { id: PROF_ID, name: el('prof-name').value, type: PROF_MODE, use: use ? '1' : '0',
+		ovpn_config: el('ovpn-config').value, ovpn_username: el('ovpn-username').value,
+		ovpn_password: el('ovpn-password').value };
+	WG_KEYS.forEach(function(k) { d['wg_' + k] = el('wg-' + k).value; });
+	withBusy([el('btn-prof-save'), el('btn-prof-use')], post('/profile_save', d), true)
+	.then(function(j) {
+		if (j.error) { note('prof-msg', errMsg(j), 'bad'); return; }
+		/* the backend re-applies when "use" is set or this profile is in use */
+		var applied = j.mode != null;
+		el('prof-edit').hidden = true;
+		clearNative();
+		note('files-msg', (applied ? '<%:Saved and connected.%>' : '<%:Saved.%>') +
+			(j.warning ? ' ' + j.warning : ''), j.warning ? 'warn' : 'good');
+		refreshProfiles();
+		if (applied) checkHealth();
+	});
+}
+el('btn-prof-save').addEventListener('click', function() { saveNative(false); });
+el('btn-prof-use').addEventListener('click', function() { saveNative(true); });
+el('btn-wg-parse').addEventListener('click', function() {
+	var sec = '', n = 0;
+	var map = { privatekey: 'private_key', address: 'addresses', dns: 'dns',
+		publickey: 'peer_public_key', presharedkey: 'preshared_key' };
+	el('wg-paste').value.split('\n').forEach(function(line) {
 		var m;
 		if ((m = line.match(/^\s*\[(.*)\]/))) sec = m[1].toLowerCase();
 		else if ((m = line.match(/^\s*([^#=]+?)\s*=\s*(.+?)\s*$/))) {
-			var k = m[1].trim().toLowerCase(), v = m[2].trim();
-			var map = { privatekey: 'private_key', address: 'addresses', dns: 'dns',
-				publickey: 'peer_public_key', presharedkey: 'preshared_key' };
-			if ((sec === 'interface' || sec === 'peer') && map[k.replace(/\s/g, '')]) {
-				var el = document.getElementById('wg-' + map[k.replace(/\s/g, '')]);
-				if (el) el.value = v;
+			var k = m[1].trim().toLowerCase().replace(/\s/g, ''), v = m[2].trim();
+			if ((sec === 'interface' || sec === 'peer') && map[k]) {
+				el('wg-' + map[k]).value = v; n++;
 			}
-			if (sec === 'peer' && k === 'endpoint' && v.indexOf(':') > 0) {
-				document.getElementById('wg-endpoint_host').value = v.slice(0, v.lastIndexOf(':'));
-				document.getElementById('wg-endpoint_port').value = v.slice(v.lastIndexOf(':') + 1);
+			if (sec === 'peer' && k === 'endpoint' && v.lastIndexOf(':') > 0) {
+				/* [v6]:port -> host without brackets */
+				el('wg-endpoint_host').value = v.slice(0, v.lastIndexOf(':')).replace(/^\[|\]$/g, '');
+				el('wg-endpoint_port').value = v.slice(v.lastIndexOf(':') + 1);
+				n++;
 			}
 		}
 	});
+	if (n) note('prof-msg', '<%:Fields filled from the config. Review them, then save.%>', 'good');
+	else note('prof-msg', '<%:No WireGuard settings found in the pasted text.%>', 'bad');
+});
+el('path-files').addEventListener('click', function() {
+	focusCard('card-vpn-files');
+	if (STATE.profiles && !STATE.profiles.some(function(p) { return p.type !== 'singbox'; }))
+		newNative();
 });
 
-
-/* wi-fi names */
-post('/wifi_get', {}).then(function(j) {
-	document.getElementById('wifi-mgmt-ssid').value = j.mgmt_ssid || '';
-	document.getElementById('wifi-mgmt-key').value = j.mgmt_key || '';
-	document.getElementById('wifi-vault-ssid').value = j.vault_ssid || '';
-	document.getElementById('wifi-vault-key').value = j.vault_key || '';
+/* ---- privacy: subscription editor ---- */
+var SUB_ORIG_URL = '';
+function openSubEditor(p) {
+	el('sub-id').value = p ? p.id : '';
+	el('sub-name').value = p ? p.name || '' : '';
+	el('sub-url').value = p ? p.sub_url || '' : '';
+	el('sub-links').value = '';
+	el('sub-links').placeholder = p && p.has_config
+		? '<%:Imported — paste new links to replace%>' : 'vless://…  vmess://…  trojan://…  ss://…';
+	SUB_ORIG_URL = p ? p.sub_url || '' : '';
+	el('sub-edit-title').textContent = p ? '<%:Edit%> ' + p.name : '<%:Add subscription%>';
+	el('btn-sub-save').textContent = p ? '<%:Save%>' : '<%:Add and fetch endpoints%>';
+	note('sub-msg', '');
+	el('sub-edit').hidden = false;
+	el('sub-name').focus();
+}
+function editSub(p) { openSubEditor(p); focusCard('card-subscriptions'); }
+el('btn-sub-new').addEventListener('click', function() { openSubEditor(null); });
+el('btn-sub-cancel').addEventListener('click', function() { el('sub-edit').hidden = true; });
+el('path-subs').addEventListener('click', function() {
+	focusCard('card-subscriptions');
+	if (STATE.profiles && !STATE.profiles.some(function(p) { return p.type === 'singbox'; }))
+		openSubEditor(null);
 });
-document.getElementById('btn-wifi-save').addEventListener('click', function() {
-	var m = document.getElementById('wifi-msg');
-	m.textContent = '<%:applying…%>';
-	post('/wifi_set', {
-		mgmt_ssid: document.getElementById('wifi-mgmt-ssid').value,
-		mgmt_key: document.getElementById('wifi-mgmt-key').value,
-		vault_ssid: document.getElementById('wifi-vault-ssid').value,
-		vault_key: document.getElementById('wifi-vault-key').value
-	}).then(function(j) {
-		m.innerHTML = j.error
-			? '<span class="tw-bad">' + esc(j.error) + '</span>'
-			: '<span class="tw-ok"><%:saved on%> ' + j.updated + ' <%:radios. Reconnect if this page drops.%></span>';
-		refreshStatus();
+el('btn-sub-save').addEventListener('click', function() {
+	var id = el('sub-id').value, url = el('sub-url').value.trim(), links = el('sub-links').value.trim();
+	var changed = url !== SUB_ORIG_URL;
+	if (!id && !url && !links) { note('sub-msg', '<%:Enter a subscription URL or paste proxy links.%>', 'bad'); return; }
+	if (links && url && changed) { note('sub-msg', '<%:Use either a new URL or pasted links, not both.%>', 'bad'); return; }
+	if (id && changed && !url && !links) { note('sub-msg', '<%:To stop using the URL, paste proxy links to replace it.%>', 'bad'); return; }
+	/* the backend imports sub_url when set, else links. Sending an
+	 * unchanged URL would re-download it (Refresh does that), so an edit
+	 * without new input only renames; pasted links replace the URL. */
+	var d = { id: id, name: el('sub-name').value, type: 'singbox', use: '0', server: '',
+		sub_url: (changed && !links) ? url : '', links: links };
+	var btn = el('btn-sub-save');
+	note('sub-msg', (d.sub_url || links) ? '<%:Downloading and checking endpoints…%>' : '<%:Saving…%>');
+	withBusy(btn, post('/profile_save', d), true).then(function(j) {
+		if (j.error) { note('sub-msg', errMsg(j), 'bad'); return; }
+		var sid = j.saved || id;
+		if (d.sub_url || links) forgetProbes(sid);
+		OPEN_SUBS[sid] = true;
+		el('sub-edit').hidden = true;
+		note('subs-msg', (id ? '<%:Saved.%>' : '<%:Subscription added.%>') +
+			(j.warning ? ' ' + j.warning : ''), j.warning ? 'warn' : 'good');
+		refreshProfiles().then(function() {
+			var g = document.querySelector('[data-profile-id="' + sid + '"]');
+			if (g) g.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+		});
+		if (j.mode != null) checkHealth();
 	});
 });
 
-/* step 4: health */
-function showHealth(j, verbose) {
-	var h = document.getElementById('health');
-	var v = { healthy: 'tw-ok', disabled: '', down: 'tw-bad',
-		'no-egress': 'tw-bad', leaking: 'tw-bad' }[j.verdict] || '';
-	var kline = '';
-	if (j.leak)
-		kline = '<br><span class="tw-bad"><%:LEAK: private traffic exits via the direct IP!%></span>';
-	else if (j.verdict === 'down' && j.kill_holding)
-		kline = '<br><span class="tw-ok"><%:Kill-switch holding: vault clients are blocked until the tunnel is up.%></span>';
-	h.innerHTML = '<%:Status:%> <span class="' + v + '">' + esc(j.verdict) + '</span> — ' +
-		esc(j.tunnel_detail || '') + '<br><%:Direct IP:%> ' + esc(j.direct_ip || '?') +
-		' · <%:Private-network IP:%> ' + esc(j.vault_ip || '?') + kline;
-	if (j.verdict) document.getElementById('st-vpn').innerHTML =
-		'<span class="' + v + '">●</span> ' + esc(j.mode) + ' (' + esc(j.verdict) + ')';
+/* ---- wi-fi: own network names, passwords and join codes ---- */
+function loadWifi() {
+	return post('/wifi_get', {}).then(function(j) {
+		if (j.error) { note('wifi-msg', errMsg(j), 'bad'); return; }
+		STATE.wifi = j;
+		/* only fill empty fields: a refresh must not clobber typing */
+		[['wifi-mgmt-ssid', j.mgmt_ssid], ['wifi-mgmt-key', j.mgmt_key],
+			['wifi-vault-ssid', j.vault_ssid], ['wifi-vault-key', j.vault_key]].forEach(function(f) {
+			if (el(f[0]).value === '' && f[1]) el(f[0]).value = f[1];
+		});
+		el('ssid-mgmt').textContent = j.mgmt_ssid || '—';
+		el('ssid-vault').textContent = j.vault_ssid || '—';
+		el('mgmt-name').textContent = j.mgmt_ssid || '…';
+		updateOverview();
+	});
 }
-document.getElementById('btn-health').addEventListener('click', function() {
-	post('/health', {}).then(function(j) { showHealth(j, true); });
+el('btn-wifi-save').addEventListener('click', function() {
+	note('wifi-msg', '<%:Applying…%>');
+	withBusy(el('btn-wifi-save'), post('/wifi_set', {
+		mgmt_ssid: el('wifi-mgmt-ssid').value,
+		mgmt_key: el('wifi-mgmt-key').value,
+		vault_ssid: el('wifi-vault-ssid').value,
+		vault_key: el('wifi-vault-key').value
+	}), true).then(function(j) {
+		if (j.error) { note('wifi-msg', errMsg(j), 'bad'); return; }
+		note('wifi-msg', '<%:Saved. Reconnect if this page loses Wi-Fi.%>', 'good');
+		hideSecrets(el('btn-wifi-save').closest('.tw-card'));
+		QR_LOADED.mgmt = false; QR_LOADED.vault = false;
+		refreshQr();
+		loadWifi();
+	});
 });
+/* scannable join codes, loaded lazily on the first visit */
+var QR_LOADED = { mgmt: false, vault: false };
+function refreshQr() {
+	['mgmt', 'vault'].forEach(function(net) {
+		if (QR_LOADED[net]) return;
+		post('/wifi_qr', { net: net }).then(function(j) {
+			var box = el('qr-' + net);
+			/* encoders may prefix an xml declaration; slice to the svg */
+			var at = (j.svg || '').indexOf('<svg');
+			if (at < 0 || at > 200) { box.hidden = true; return; }
+			QR_LOADED[net] = true;
+			var name = net === 'mgmt' ? el('wifi-mgmt-ssid').value : el('wifi-vault-ssid').value;
+			box.innerHTML = '<small><%:Scan to join%> ' + esc(name) + '</small>' + j.svg.slice(at);
+			box.hidden = false;
+		});
+	});
+}
 
-refreshStatus();
+function refreshAll() {
+	refreshUpstream();
+	checkCaptive();
+	checkHealth();
+	refreshProfiles();
+	refreshSaved();
+	loadWifi();
+}
+updateOverview();
+refreshAll();
+loadScan();
 </script>
-
-<style>
-.tw-cards{display:flex;gap:1em;flex-wrap:wrap;margin-bottom:1em}
-.tw-card{flex:1;min-width:12em;border:1px solid #ccc;border-radius:8px;padding:.6em .9em;background:#fafafa}
-.tw-card h4{margin:.1em 0 .3em}
-.tw-note{margin-bottom:1.5em}
-.tw-box{border:1px solid #ccc;border-radius:8px;padding:.6em .9em;margin-top:.8em;max-width:36em}
-.tw-tabs{margin:.5em 0}
-.tw-tabs button{margin-right:.4em}
-.tw-ok{color:#0a0;font-weight:bold}.tw-bad{color:#c00;font-weight:bold}.tw-warn{color:#b60;font-weight:bold}
-#tw-advanced{float:right}
-@media(max-width:600px){.tw-card{min-width:100%}}
-</style>
-<%+footer%>
+</body>
+</html>

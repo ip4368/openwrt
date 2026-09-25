@@ -33,5 +33,8 @@ check enc-mixed "$(tw_uci_encryption 'WPA PSK / SAE / FT SAE (CCMP)')" sae-mixed
 check enc-eap "$(tw_uci_encryption '802.1x (CCMP)')" eap
 check enc-wep "$(tw_uci_encryption 'WEP Open (WEP-40)')" wep-open
 check enc-future "$(tw_uci_encryption 'Something New (CCMP)')" sae-mixed
+# saved entries recorded from the live uplink hold uci names: pass them through
+check enc-uci-psk2 "$(tw_uci_encryption 'psk2')" psk2
+check enc-uci-sae "$(tw_uci_encryption 'sae-mixed')" sae-mixed
 
 echo "PASS: join helpers ($PASS assertions)"

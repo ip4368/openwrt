@@ -3,9 +3,24 @@
 # config with a TUN inbound. Supports vmess://, vless://, trojan:// and
 # ss:// links, plain or base64-wrapped subscription bodies.
 # Usage: tw-sub-import '<url|link|->' [out-path]
+# Env: TW_DEFAULT_TAG='<tag>' preselects the proxy selector default.
+#      TW_INBOUND=socks (+ TW_SOCKS_PORT) emits a loopback SOCKS inbound
+#      instead of TUN, for throwaway single-endpoint probe configs.
+#      TW_DNS_SERVER='<ip>' overrides the DNS hijack upstream (default
+#      1.1.1.1); port 53 is always answered over TCP through the proxy
+#      because some endpoints (e.g. VLESS Vision flows) cannot proxy UDP.
+#      TW_DNS_PROBE_IP='127.x.y.z' (socks probe configs only) adds a UDP
+#      listener on that loopback address, port 53, relayed to 1.1.1.1
+#      through the proxy, so tw-probe can check the endpoint carries UDP.
+# The config and its sidecars are staged next to the target and moved into
+# place only after sing-box check passes, so a bad import never replaces a
+# working config.
 [ -r /usr/share/libubox/jshn.sh ] && . /usr/share/libubox/jshn.sh || NO_JSHN=1
 
 INPUT="$1"
+# Pasted input often carries stray whitespace; a leading space would dodge
+# the URL match below and demote a direct fetch to the slower nested path.
+INPUT=$(printf '%s' "$INPUT" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 OUT="${2:-$(uci -q get travelwizard.sb.config_file)}"
 OUT="${OUT:-/etc/sing-box/config.json}"
 [ -z "$INPUT" ] && { echo '{"error":"missing input"}'; exit 1; }
@@ -24,6 +39,17 @@ urldecode() {
 }
 jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 join_csv() { tr '\n' ',' | sed 's/,$//'; } # busybox has no paste(1)
+tw_fetch() { # $1 url $2 max-time -> body on stdout; hotel wifi flakes,
+	local url="$1" mt="$2" tries="${TW_FETCH_RETRIES:-3}"
+	local sleep_s="${TW_FETCH_SLEEP:-2}" n=1 out
+	while [ "$n" -le "$tries" ]; do # so retry instead of failing outright
+		out=$(curl -sL -f --compressed --max-time "$mt" "$url" 2>/dev/null)
+		if [ -n "$out" ]; then printf '%s' "$out"; return 0; fi
+		n=$((n + 1))
+		[ "$n" -le "$tries" ] && sleep "$sleep_s"
+	done
+	return 1
+}
 qparam() { # $1 query, $2 key
 	printf '&%s' "$1" | sed -n "s/.*[?&]$2=\\([^&]*\\).*/\\1/p" | urldecode
 }
@@ -51,7 +77,10 @@ emit_vmess() { # $1 body(base64 json) $2 tag $3 idx
 	[ -z "$server" ] || [ -z "$uuid" ] && return 1
 	: "${port:=443}"; : "${sec:=auto}"; : "${net:=tcp}"
 	{
-		printf '{"type":"vmess","tag":"%s","server":"%s","server_port":%s,"uuid":"%s","security":"%s","network":"tcp"' \
+		# NOTE: no "network" limiter: the default (tcp+udp) is required.
+		# Emitting "network":"tcp" disables UDP outright — including XUDP
+		# on Vision flows — which kills vault DNS and all UDP services.
+		printf '{"type":"vmess","tag":"%s","server":"%s","server_port":%s,"uuid":"%s","security":"%s","domain_resolver":"local-dns"' \
 			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$uuid")" "$(jesc "$sec")"
 		[ "$tls" = "tls" ] && printf ',"tls":{"enabled":true,"server_name":"%s"}' "$(jesc "${host:-$server}")"
 		[ "$net" = "ws" ] && printf ',"transport":{"type":"ws","path":"%s","headers":{"Host":"%s"}}' \
@@ -73,7 +102,9 @@ emit_vless() { # $1 user@host:port?query $2 tag $3 idx
 	sid=$(qparam "$query" sid); flow=$(qparam "$query" flow)
 	: "${port:=443}"; : "${type:=tcp}"
 	{
-		printf '{"type":"vless","tag":"%s","server":"%s","server_port":%s,"uuid":"%s","network":"tcp"' \
+		# NOTE: no "network" limiter, see emit_vmess: UDP (incl. XUDP
+		# on Vision flows) must stay enabled for vault DNS and UDP apps.
+		printf '{"type":"vless","tag":"%s","server":"%s","server_port":%s,"uuid":"%s","domain_resolver":"local-dns"' \
 			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$uuid")"
 		[ "$type" = "tcp" ] && [ -n "$flow" ] && [ "$flow" != "none" ] \
 			&& printf ',"flow":"%s"' "$(jesc "$flow")"
@@ -101,7 +132,7 @@ emit_trojan() { # $1 pass@host:port?query $2 tag $3 idx
 	: "${port:=443}"
 	sni=$(qparam "$query" sni)
 	{
-		printf '{"type":"trojan","tag":"%s","server":"%s","server_port":%s,"password":"%s","tls":{"enabled":true,"server_name":"%s"}}' \
+		printf '{"type":"trojan","tag":"%s","server":"%s","server_port":%s,"password":"%s","domain_resolver":"local-dns","tls":{"enabled":true,"server_name":"%s"}}' \
 			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$pass")" "$(jesc "${sni:-$server}")"
 	} >"$TMP/obs-$3.json"
 	echo "$2" >>"$TMP/tags"
@@ -122,7 +153,7 @@ emit_ss() { # $1 [base64|method:pass]@host:port... $2 tag $3 idx
 	[ -z "$method" ] || [ -z "$server" ] && return 1
 	: "${port:=8388}"
 	{
-		printf '{"type":"shadowsocks","tag":"%s","server":"%s","server_port":%s,"method":"%s","password":"%s"}' \
+		printf '{"type":"shadowsocks","tag":"%s","server":"%s","server_port":%s,"method":"%s","password":"%s","domain_resolver":"local-dns"}' \
 			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$method")" "$(jesc "$pass")"
 	} >"$TMP/obs-$3.json"
 	echo "$2" >>"$TMP/tags"
@@ -150,6 +181,10 @@ diag_fail() {
 	esac
 	if [ "$FETCHED" -gt 0 ]; then
 		printf '{"error":"followed %s nested subscription link(s), found no supported servers"}\n' "$FETCHED"
+		exit 1
+	fi
+	if [ "$ATTEMPTED" -gt 0 ]; then
+		printf '{"error":"found %s nested subscription link(s) but none could be fetched (network error); try again"}\n' "$ATTEMPTED"
 		exit 1
 	fi
 	if [ -s "$TMP/unknown" ]; then
@@ -195,30 +230,33 @@ process_text() { # parse global TEXT, appending outbounds/tags; queues sub-URLs
 		while grep -qxF -- "$tag" "$TMP/tags" 2>/dev/null; do
 			n=$((n + 1)); tag="$base-$n"
 		done
+		ok=0
 		case "$scheme" in
-		vmess) emit_vmess "$body" "$tag" "$idx" || idx=$((idx - 1)) ;;
-		vless) emit_vless "$body" "$tag" "$idx" || idx=$((idx - 1)) ;;
-		trojan) emit_trojan "$body" "$tag" "$idx" || idx=$((idx - 1)) ;;
-		ss|shadowsocks) emit_ss "$body" "$tag" "$idx" || idx=$((idx - 1)) ;;
+		vmess) emit_vmess "$body" "$tag" "$idx" && ok=1 || idx=$((idx - 1)) ;;
+		vless) emit_vless "$body" "$tag" "$idx" && ok=1 || idx=$((idx - 1)) ;;
+		trojan) emit_trojan "$body" "$tag" "$idx" && ok=1 || idx=$((idx - 1)) ;;
+		ss|shadowsocks) emit_ss "$body" "$tag" "$idx" && ok=1 || idx=$((idx - 1)) ;;
 		http|https)
 				idx=$((idx - 1))
 				echo "$scheme" >>"$TMP/unknown"
 				[ -n "$QUEUE_OK" ] && echo "$line" >>"$TMP/subqueue" ;;
 			*) idx=$((idx - 1)); echo "$scheme" >>"$TMP/unknown" ;;
 		esac
+		# tag -> source-link index for per-endpoint probing (tw-probe)
+		[ "$ok" = "1" ] && printf '%s\t%s\n' "$tag" "$line" >>"$TMP/map"
 	done <"$TMP/lines"
 }
 
 # --- collect + process (follows nested subscription URLs, depth-limited) --
 : >"$TMP/tags"; : >"$TMP/unknown"; : >"$TMP/subqueue"; : >"$TMP/seen"
-: >"$TMP/seenlines"; : >"$TMP/alltext"
-idx=0; FETCHED=0
+: >"$TMP/seenlines"; : >"$TMP/alltext"; : >"$TMP/map"
+idx=0; FETCHED=0; ATTEMPTED=0
 RAW=""
 case "$INPUT" in
 	-) RAW=$(cat) ;;
 	http://*|https://*)
-		RAW=$(curl -sL -f --compressed --max-time 20 "$INPUT" 2>/dev/null)
-		[ -z "$RAW" ] && { echo '{"error":"subscription fetch failed (unreachable or HTTP error)"}'; exit 1; }
+		RAW=$(tw_fetch "$INPUT" 20) \
+			|| { echo '{"error":"subscription fetch failed (unreachable or HTTP error)"}'; exit 1; }
 		echo "$INPUT" >>"$TMP/seen"
 		;;
 	*) RAW="$INPUT" ;;
@@ -234,8 +272,8 @@ while [ "$DEPTH" -le 2 ] && [ -s "$TMP/subqueue" ]; do
 		[ -z "$url" ] && continue
 		grep -qxF -- "$url" "$TMP/seen" 2>/dev/null && continue
 		echo "$url" >>"$TMP/seen"
-		BODY=$(curl -sL -f --compressed --max-time 10 "$url" 2>/dev/null) || continue
-		[ -z "$BODY" ] && continue
+		ATTEMPTED=$((ATTEMPTED + 1))
+		BODY=$(tw_fetch "$url" 10) || continue
 		FETCHED=$((FETCHED + 1))
 		RAW="$BODY"; decode_text; process_text
 	done <"$TMP/level"
@@ -254,26 +292,46 @@ SELECT_LIST=$(sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/"&"/' "$TMP/tags" | join_csv)
 OUTBOUND_FRAGS=$(for f in "$TMP"/obs-*.json; do cat "$f"; echo ","; done)
 
 mkdir -p "${OUT%/*}"
-# NOTE: gvisor stack, not system: with system, TCP SYNs entering tun0
-# vanish silently on this build (verified live), while gvisor relays
-# them through the proxy correctly.
+if [ "$TW_INBOUND" = "socks" ]; then
+	# Probe config (tw-probe): loopback SOCKS instead of TUN, so a
+	# throwaway instance can test one endpoint without touching the
+	# live tunnel, tun0, or the firewall.
+	: "${TW_SOCKS_PORT:=18080}"
+	case "$TW_SOCKS_PORT" in ''|*[!0-9]*) TW_SOCKS_PORT=18080 ;; esac
+	INBOUND_JSON=$(printf '{"type":"socks","tag":"probe-in","listen":"127.0.0.1","listen_port":%s}' "$TW_SOCKS_PORT")
+	case "$TW_DNS_PROBE_IP" in
+		127.*[!0-9.]*|127.*..*|127.*.) ;;
+		127.*.*.*)
+			INBOUND_JSON="$INBOUND_JSON,$(printf '{"type":"direct","tag":"dns-probe-in","listen":"%s","listen_port":53,"network":"udp","override_address":"1.1.1.1","override_port":53}' "$TW_DNS_PROBE_IP")"
+			# ahead of the port-53 hijack, which would answer it locally
+			PROBE_RULE='{"inbound":"dns-probe-in","action":"route","outbound":"proxy"},' ;;
+	esac
+else
+	# NOTE: gvisor stack, not system: with system, TCP SYNs entering tun0
+	# vanish silently on this build (verified live), while gvisor relays
+	# them through the proxy correctly.
+	INBOUND_JSON='{"type":"tun","tag":"tun-in","interface_name":"tun0","address":["172.19.0.1/30"],"stack":"gvisor","auto_route":false}'
+fi
 # NOTE: the proxy selector lists only imported servers. A "direct" member
 # would let vault traffic leave through sing-box unproxied, bypassing the
 # kill switch.
+# NOTE: port 53 is hijacked into sing-box's DNS module, which resolves over
+# TCP detoured through the proxy — vault DNS keeps working even where raw
+# UDP is filtered. Each proxy outbound sets domain_resolver to the system
+# resolver: without it, an endpoint whose server is a domain name can never
+# resolve (DNS needs the proxy, the proxy needs DNS), killing the tunnel.
+: "${TW_DNS_SERVER:=1.1.1.1}"
+case "$TW_DNS_SERVER" in ''|*[!0-9.]*|.*|*.|*..*) TW_DNS_SERVER=1.1.1.1 ;; esac
 {
-	printf '{"log":{"level":"warn"},"inbounds":[{"type":"tun","tag":"tun-in","interface_name":"tun0","address":["172.19.0.1/30"],"stack":"gvisor","auto_route":false}],"outbounds":[%s{"type":"block","tag":"block"},{"type":"selector","tag":"proxy","outbounds":[%s],"default":"%s"}],"route":{"final":"proxy","auto_detect_interface":true}}' \
-		"$OUTBOUND_FRAGS" "$SELECT_LIST" "$(jesc "$DEFAULT_TAG")"
-} >"$OUT"
-chmod 600 "$OUT"
-case "$OUT" in
-	*.json)
-		cp "$TMP/tags" "${OUT%.json}.tags"
-		awk '!seen[$0]++' "$TMP/alltext" >"${OUT%.json}.src"
-		chmod 600 "${OUT%.json}.tags" "${OUT%.json}.src" ;;
-esac
+	printf '{"log":{"level":"warn"},"inbounds":[%s],"dns":{"servers":[{"tag":"proxy-dns","type":"tcp","server":"%s","detour":"proxy"},{"tag":"local-dns","type":"local"}],"final":"proxy-dns"},"outbounds":[%s{"type":"block","tag":"block"},{"type":"selector","tag":"proxy","outbounds":[%s],"default":"%s"}],"route":{"rules":[%s{"port":53,"action":"hijack-dns"}],"final":"proxy","auto_detect_interface":true}}' \
+		"$INBOUND_JSON" "$TW_DNS_SERVER" "$OUTBOUND_FRAGS" "$SELECT_LIST" "$(jesc "$DEFAULT_TAG")" \
+		"$PROBE_RULE"
+} >"$TMP/config.json"
+awk '!seen[$0]++' "$TMP/alltext" >"$TMP/src"
 
-if command -v sing-box >/dev/null 2>&1; then
-	if ! sing-box check -c "$OUT" >/dev/null 2>&1; then
+SB_BIN="${TW_SINGBOX_BIN:-sing-box}"
+if command -v "$SB_BIN" >/dev/null 2>&1; then
+	if ! "$SB_BIN" check -c "$TMP/config.json" >/dev/null 2>&1; then
 		echo '{"error":"generated config failed sing-box check"}'
 		exit 1
 	fi
@@ -281,6 +339,19 @@ if command -v sing-box >/dev/null 2>&1; then
 else
 	CHECKED=false
 fi
+
+# Stage beside the target (same filesystem) so each mv is an atomic rename.
+publish() { # $1 staged file $2 final path
+	cp "$1" "$2.new.$$" && chmod 600 "$2.new.$$" && mv -f "$2.new.$$" "$2"
+}
+case "$OUT" in
+	*.json)
+		publish "$TMP/tags" "${OUT%.json}.tags"
+		publish "$TMP/map" "${OUT%.json}.map"
+		publish "$TMP/src" "${OUT%.json}.src" ;;
+esac
+publish "$TMP/config.json" "$OUT" \
+	|| { rm -f "$OUT.new.$$"; echo '{"error":"could not write the config file"}'; exit 1; }
 
 if [ -z "$NO_JSHN" ]; then
 json_init

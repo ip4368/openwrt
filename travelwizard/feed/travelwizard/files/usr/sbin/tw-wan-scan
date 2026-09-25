@@ -1,28 +1,45 @@
 #!/bin/sh
 # Scan nearby Wi-Fi networks and report current upstream state as JSON.
 # Usage: tw-wan-scan
-. /usr/share/libubox/jshn.sh
-. /usr/lib/travelwizard/common.sh
+. "${TW_JSHN:-/usr/share/libubox/jshn.sh}"
+. "${TW_COMMON:-/usr/lib/travelwizard/common.sh}"
 
 # Scan one interface per radio (2.4 GHz sees different networks than 5 GHz)
-# and merge the results, strongest first.
-SCAN_IFS=$(tw_scan_ifs)
+# and merge the results, strongest first. Radios scan in parallel: each may
+# spend several seconds retrying, and the user is waiting on the slowest.
+SCAN_IFS=$(tw_scan_ifs "${TW_SCAN_SYSFS:-/sys/class/net}")
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 : >"$TMP/nets"
+# Field separator for the merge: unlike "|" it cannot appear in a name.
+US=$(printf '\037')
 
+i=0
 for SCAN_IF in $SCAN_IFS; do
-	iwinfo "$SCAN_IF" scan 2>/dev/null | awk '
+	i=$((i + 1))
+	( tw_scan_one "$SCAN_IF" >"$TMP/scan.$i" || rm -f "$TMP/scan.$i" ) &
+done
+wait
+
+PARTIAL=0
+while [ "$i" -gt 0 ]; do
+	if [ ! -s "$TMP/scan.$i" ]; then
+		PARTIAL=1
+		i=$((i - 1))
+		continue
+	fi
+	awk -v us="$US" '
 		function emit() {
 			if (bssid != "") {
 				if (essid == "" || essid == "unknown") essid = "(hidden) " bssid;
-				printf "%d|%s|%s|%s|%s\n", sig, essid, bssid, chan, enc;
+				printf "%d%s%s%s%s%s%s%s%s\n", sig, us, essid, us, bssid, us, chan, us, enc;
 			}
 		}
 		/^Cell/ { emit(); bssid=$5; essid=""; sig=-999; chan=""; enc="none"; next; }
 		/ESSID:/ {
-			line=$0; sub(/^[^"]*"/, "", line); sub(/".*$/, "", line);
+			# first to last quote: a name may itself contain quotes
+			line=$0; sub(/^[^"]*"/, "", line); sub(/"[^"]*$/, "", line);
 			if ($2 == "unknown") essid=""; else essid=line;
 			next;
 		}
@@ -33,9 +50,10 @@ for SCAN_IF in $SCAN_IFS; do
 		}
 		/Encryption:/ { line=$0; sub(/^.*Encryption: /, "", line); enc=line; next; }
 		END { emit(); }
-	' >>"$TMP/nets"
+	' "$TMP/scan.$i" >>"$TMP/nets"
+	i=$((i - 1))
 done
-sort -t'|' -k1,1rn "$TMP/nets" | awk -F'|' '!seen[$2]++' >"$TMP/merged"
+sort -t"$US" -k1,1rn "$TMP/nets" | awk -F"$US" '!seen[$2]++' >"$TMP/merged"
 
 # Current upstream state.
 UPSTREAM=$(tw_upstream)
@@ -51,9 +69,10 @@ fi
 
 json_init
 json_add_string scan_if "$SCAN_IFS"
+json_add_boolean partial "$PARTIAL"
 json_add_array networks
 if [ -s "$TMP/merged" ]; then
-	while IFS='|' read -r sig essid bssid chan enc; do
+	while IFS="$US" read -r sig essid bssid chan enc; do
 		json_add_object
 		json_add_string ssid "$essid"
 		json_add_string bssid "$bssid"

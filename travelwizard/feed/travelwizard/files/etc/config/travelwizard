@@ -17,6 +17,10 @@ config main 'main'
 	option vpn_mode 'off'
 	# Preferred upstream: auto (ethernet first) | wifi | ethernet
 	option upstream 'auto'
+	# Set to 1 once legacy single-config sections were folded into
+	# profiles; stops the migration from ever re-running (and from
+	# resurrecting profiles the user deleted).
+	option migrated '0'
 
 config wireguard 'wg'
 	option private_key ''

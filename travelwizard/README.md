@@ -59,7 +59,11 @@ The `vpn` firewall zone statically matches all tunnel interfaces (`tw_wg`,
   - `files/usr/sbin/tw-subnet-fix` — overlap detect; re-addresses LAN/vault to a free /24 (and moves the pbr policy with it)
   - `files/usr/sbin/tw-captive-check` — `generate_204`-style probes → `online | captive | offline` + login URL
   - `files/usr/sbin/tw-sub-import '<url|link|->'` — subscription/single link → `/etc/sing-box/config.json`
-    (vmess/vless/trojan/ss, incl. base64 subs and reality/ws options; capped at 32 nodes)
+    (vmess/vless/trojan/ss, incl. base64 subs and reality/ws options; capped at 32 nodes).
+    Also writes `.tags` (endpoint names) and `.map` (endpoint → source link) sidecars.
+  - `files/usr/sbin/tw-probe '<profile>' '<endpoint>'` — full end-to-end latency
+    test of one endpoint: a throwaway sing-box (loopback SOCKS, no TUN) fetches
+    a probe URL through just that endpoint and reports ok/latency_ms
   - `files/usr/sbin/tw-vpn-apply` — apply UCI mode: tunnels + pbr policy + vault DHCP DNS + service restarts
   - `files/usr/sbin/tw-vpn-health` — tunnel state + direct-vs-vault egress IPs + leak verdict
   - `files/usr/sbin/tw-wifi-apply` — rename/rekey both SSIDs on all radios
@@ -68,32 +72,67 @@ The `vpn` firewall zone statically matches all tunnel interfaces (`tw_wg`,
   - `files/etc/uci-defaults/90-travelwizard` — first-boot network/wireless/firewall/dhcp layout
   - `files/etc/hotplug.d/iface/30-tw-subnet` — re-run subnet fix when upstream (re)connects
 - `feed/luci-app-travelwizard/` — LuCI app: first menu entry, JSON API +
-  4-step mobile-first wizard (`wizard.htm`, no JS build step), "Advanced" link
-  back to full LuCI.
+  standalone app-style UI (`wizard.htm`, no JS build step, no LuCI chrome):
+  a tile dashboard where each tile opens one settings screen, plus an
+  "Advanced" button back to full LuCI.
 
-## The wizard flow
+## The wizard UI
 
-1. **Upstream** — pick Wi-Fi vs cable (route metrics; cable preferred by
-   default), with live link status for both. **Scan & join** — `tw-wan-scan`
-   lists networks by signal with band tags (deduped, secured flagged); shows
-   connected + last-used network. `tw-wan-join` places the client on the
-   matching radio band, picks the WPA mode from scan data, then runs the
-   subnet fix (auto re-address + notice in UI) and the captive check.
-2. **Internet / captive** — `tw-captive-check` probes
-   `connectivitycheck.gstatic.com/generate_204` (+ Apple/MSFT fallbacks). If a
-   portal hijacks it, the wizard shows **Open login page** (the redirect
-   target) + **Check again**.
-3. **VPN profiles** — save as many as you like (pre-trip setup), switch with
-   one click; only the active profile drives the vault network. Secrets never
-   leave the router (blank field = keep). WireGuard paste-a-`.conf` auto-fill,
-   OpenVPN paste-`.ovpn` + optional auth, proxy subscription URL or pasted
-   links imported on save (vmess/vless/trojan/ss, with a clear error when the
-   server returns something else, e.g. Clash YAML or a login page).
-4. **Verify** — `tw-vpn-health`: handshake/process state, direct vs vault
-   egress IP, `healthy | down | no-egress | leaking | disabled` verdict.
+Home is a guided dashboard (mobile-first, responsive on desktop): a status
+banner with the single next action ("Connect to Wi-Fi", "Open hotel
+sign-in", "Turn on VPN"…), a 3-row setup checklist (Internet → Hotel
+sign-in → VPN, each tappable), then tiles for every settings screen. Each
+tile shows live status (green/amber/red dot + one-line preview):
 
-Plus an unnumbered **Wi-Fi names & passwords** section to rename/rekey both
-SSIDs on all radios.
+- **Internet** — pick Wi-Fi vs cable (route metrics; cable preferred by
+  default), with live link status for both, plus **Disconnect Wi-Fi**
+  (`tw-wan-disconnect` drops the link and reports the SSID). **Scan &
+  join** — `tw-wan-scan` lists networks by signal with band tags (deduped,
+  secured flagged); each radio is scanned with retries plus a kernel-cache
+  (`iw scan dump`) fallback, since a connected radio briefly refuses fresh
+  scans — a band that still fails is flagged `partial` and the UI asks for
+  a re-tap. The UI sorts connected first, then saved, then the
+  rest, with phone-style signal bars and Connected/Saved badges.
+  `tw-wan-join` places the client on the matching radio band, picks the
+  WPA mode from scan data, then runs the subnet fix (auto re-address +
+  notice in UI) and the captive check. Joined networks are remembered
+  (SSID + key, server-side only) for one-tap reconnect from the Saved
+  networks list, with Forget to drop one.
+- **Hotel sign-in** — `tw-captive-check` probes
+  `connectivitycheck.gstatic.com/generate_204` (+ Apple/MSFT fallbacks). If a
+  portal hijacks it, the screen shows numbered steps + **Open hotel sign-in**
+  (the redirect target) + **Check again**, and keeps polling so it notices
+  by itself once you finish the portal on another tab/device.
+- **VPN** — profiles: save as many as you like (pre-trip
+  setup), switch with one click; only the active profile drives the vault
+  network. Secrets never leave the router (blank field = keep). WireGuard
+  paste-a-`.conf` auto-fill, OpenVPN paste-`.ovpn` + optional auth, proxy
+  subscription URL or pasted links imported on save (vmess/vless/trojan/ss,
+  fetches retried for flaky hotel wifi, with a clear error when the server
+  returns something else, e.g. Clash YAML or a login page). Each proxy
+  profile lists its **servers** as a foldable
+  group: pick the active one to connect (switching re-applies the live
+  tunnel), **Test** any server for a full end-to-end latency probe
+  (**Test all** runs the whole list, 3 at a time), and **Refresh** to
+  re-fetch the subscription.
+- **My Wi-Fi** — rename/rekey both SSIDs on all radios (tile warns while the
+  default passwords are still in place), each with a scannable join QR
+  (`tw-wifi-qr` + `/wifi_qr`, regenerated on save).
+- **Setup portal** — while the router has no upstream link, `tw-portal`
+  (driven by the wwan/wan hotplug hook, a boot init script, and a firewall
+  include that survives `fw4` restarts) answers all DNS with the router IP
+  (dnsmasq catch-all — without it phones never send the probes that trigger
+  the popup), DNATs TCP/80 from the setup network to the router, and serves
+  OS probe pages that bounce to the wizard — so a joining phone pops
+  "Sign in to Wi-Fi" straight into setup. Deliberately offline-only: with
+  a link up (even captive) the portal lifts (rules, DNS and all) so the
+  hotel's own login page stays reachable.
+- **Checkup** — `tw-vpn-health` verdict in plain words ("Protection is
+  working", "VPN isn't working", "Safety lock is on"…), with IPs, vault DNS
+  and the tunnel-routed DNS result folded under Technical details, plus a
+  **Fix in VPN settings** button when something is wrong.
+  `tw-vpn-apply` also warns when the tunnel is up but no route via it
+  exists (pbr policy inactive).
 
 ## Build
 
@@ -173,6 +212,11 @@ the wizard's Wi-Fi section on first login.
   when it is down. The firewall only accepts DHCP from vault to the router.
 - **The sing-box selector has no `direct` member**, only imported servers, so
   vault traffic entering `tun0` can't be switched to an unproxied exit.
+- **Port 53 is hijacked into sing-box DNS-over-TCP through the proxy**,
+  so vault DNS keeps working even where UDP is filtered. Direct UDP also
+  works through all proxy types (VLESS Vision included, via XUDP when the
+  server supports it) — the importer deliberately emits no `"network"`
+  limiter on outbounds, which would disable UDP outright.
 - **Ethernet WAN** works as upstream automatically (metric preferred over
   Wi-Fi); the wizard's join/captive logic targets whichever upstream is up.
 
@@ -183,6 +227,7 @@ tw-wan-scan | jsonfilter -e '@.networks[*].ssid'
 tw-wan-join 'Hotel_WiFi' 'secret'   # then check the wizard UI too
 tw-captive-check
 tw-sub-import 'https://example.com/sub'   # or a single 'vless://…' link
+tw-probe 'p1_xxx' 'endpoint name'   # full latency test of one endpoint
 uci set travelwizard.main.vpn_mode='singbox'; uci commit; tw-vpn-apply
 tw-vpn-health
 ```

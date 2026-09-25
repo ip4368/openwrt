@@ -56,4 +56,36 @@ Address:	127.0.0.1:53
 EOF
 check nxdomain-empty "$(tw_resolve_ipv4 nx)" ""
 
+# tw_ns_answer: same formats, but with an explicit non-loopback server,
+# whose address must never be mistaken for the answer.
+cat >"$TMP/explicit-bind.txt" <<'EOF'
+Server:		1.1.1.1
+Address:	1.1.1.1#53
+
+Non-authoritative answer:
+Name:	example.com
+Address: 93.184.215.14
+EOF
+check explicit-bind "$(tw_ns_answer <"$TMP/explicit-bind.txt")" \
+	"93.184.215.14"
+
+cat >"$TMP/explicit-busybox.txt" <<'EOF'
+Server:    1.1.1.1
+Address 1: 1.1.1.1
+
+Name:      example.com
+Address 1: 93.184.215.14
+Address 2: 2606:2800:220:1:248:1893:25c8:1946
+EOF
+check explicit-busybox "$(tw_ns_answer <"$TMP/explicit-busybox.txt")" \
+	"93.184.215.14"
+
+cat >"$TMP/explicit-nx.txt" <<'EOF'
+Server:		1.1.1.1
+Address:	1.1.1.1#53
+
+** server can't find nope.invalid: NXDOMAIN
+EOF
+check explicit-nxdomain-empty "$(tw_ns_answer <"$TMP/explicit-nx.txt")" ""
+
 echo "PASS: resolve ($PASS assertions)"

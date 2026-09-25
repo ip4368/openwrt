@@ -1,11 +1,33 @@
 [ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ] || exit 0
 [ "$INTERFACE" = "wwan" ] || [ "$INTERFACE" = "wan" ] || exit 0
+# No-link state drives the setup portal (joining phones pop the wizard).
+/usr/sbin/tw-portal auto >/dev/null 2>&1
 # pbr only processes policies while its uplink is up; the travel upstream
 # roams between wan and wwan, so keep the uplink pointed at it.
 . /usr/lib/travelwizard/common.sh
+# A Wi-Fi uplink that came up is one worth remembering, however it was
+# started (see tw_saved_record_wwan).
+if [ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "wwan" ]; then
+	lock /var/lock/tw-saved
+	tw_saved_record_wwan && uci commit travelwizard
+	lock -u /var/lock/tw-saved
+fi
 UP=$(tw_upstream 2>/dev/null) || exit 0
-[ "$UP" = "$(uci -q get pbr.config.uplink_interface)" ] && exit 0
-uci set pbr.config.uplink_interface="$UP"
-uci commit pbr
-/etc/init.d/pbr reload >/dev/null 2>&1 &
+OLD=$(uci -q get pbr.config.uplink_interface)
+if [ "$UP" != "$OLD" ]; then
+	uci set pbr.config.uplink_interface="$UP"
+	uci commit pbr
+	/etc/init.d/pbr reload >/dev/null 2>&1 &
+fi
+# The proxy's upstream connections are bound to the old uplink: after a
+# switch (wan <-> wwan) or a fresh link on the current one (joined another
+# hotel network) they stall until they time out, and the vault with them.
+# A restart reconnects at once; tun0 bounces and pbr follows it, while the
+# kill switch holds the vault in the meantime.
+if [ "$(tw_active_mode)" = "singbox" ] \
+	&& [ "$(uci -q get sing-box.main.enabled)" = "1" ] \
+	&& { [ "$UP" != "$OLD" ] || { [ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "$UP" ]; }; }; then
+	# let the new link settle its default route first
+	( sleep 2; /etc/init.d/sing-box restart >/dev/null 2>&1 ) &
+fi
 exit 0

@@ -13,6 +13,9 @@ BAND="$3"
 ENCHINT="$4"
 BSSID="$5"
 [ -z "$SSID" ] && { echo '{"error":"missing ssid"}'; exit 1; }
+# Finish even if the web request goes away mid-join (the browser's device
+# can drop off this router's Wi-Fi while the radio retunes).
+trap '' HUP INT TERM PIPE
 
 # Place the sta iface on the radio matching the target band. The APs on that
 # radio follow the upstream channel; the other radio stays put.
@@ -70,6 +73,14 @@ if [ "$LINKED" != "true" ]; then
 	echo '{"linked":false,"error":"could not connect (wrong password or out of range)"}'
 	exit 1
 fi
+
+# Remember the network for one-tap reconnect (silent: JSON purity). The
+# wwan hotplug records it at the same moment: the lock keeps the two from
+# both adding an entry.
+lock /var/lock/tw-saved
+tw_saved_upsert "$SSID" "$KEY" "$BAND" "$ENCHINT" "$BSSID"
+uci commit travelwizard
+lock -u /var/lock/tw-saved
 
 SUBNET_JSON=$(/usr/sbin/tw-subnet-fix 2>/dev/null)
 [ -z "$SUBNET_JSON" ] && SUBNET_JSON='{"changed":false}'

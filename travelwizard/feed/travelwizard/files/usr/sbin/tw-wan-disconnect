@@ -1,0 +1,23 @@
+#!/bin/sh
+# Disconnect the upstream Wi-Fi client (WISP/sta). Saved credentials are
+# kept, so one tap on a saved network reconnects. Prints JSON.
+SSID=$(uci -q get wireless.wwan.ssid)
+RADIO=$(uci -q get wireless.wwan.device)
+uci set wireless.wwan.disabled='1' 2>/dev/null
+uci commit wireless 2>/dev/null
+[ -n "$RADIO" ] && wifi reload "$RADIO" >/dev/null 2>&1
+# Wait for the link to drop (best effort, 10s).
+i=0
+while [ $i -lt 10 ]; do
+	up=$(ubus call network.interface.wwan status 2>/dev/null \
+		| jsonfilter -e '@.up' 2>/dev/null)
+	[ "$up" = "true" ] || break
+	sleep 1
+	i=$((i + 1))
+done
+if [ -z "$SSID" ]; then
+	SSID_JSON='""'
+else
+	SSID_JSON=$(printf '%s' "$SSID" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')
+fi
+printf '{"left":true,"ssid":%s}\n' "$SSID_JSON"

@@ -1,0 +1,212 @@
+#!/bin/sh
+# Setup portal: while the router has no upstream link, hijack TCP/80 from the
+# setup (lan) network to this router so joining phones pop the wizard
+# ("Sign in to Wi-Fi") instead of failing. Deliberately offline-only: with a
+# link up (even captive) the hotel portal must stay reachable, so the portal
+# lifts as soon as wwan/wan is up.
+# State is derived every run from the link state (no state file), so this is
+# safe to call from hotplug, boot init and the firewall include alike.
+# Usage: tw-portal auto | status | uninstall
+# Always exits 0 (best effort); auto/status print JSON on stdout.
+. "${TW_COMMON:-/usr/lib/travelwizard/common.sh}"
+
+FW_PORTAL=/usr/lib/travelwizard/fw-portal.sh
+WWW_DIR="${TW_PORTAL_WWW:-/www}"
+# OS connectivity probes (Android, iOS/macOS, Windows, Firefox): any
+# non-204 answer pops the portal window, which follows our redirect.
+PROBE_FILES="generate_204 gen_204 hotspot-detect.html redirect connecttest.txt ncsi.txt success.txt"
+
+portal_uplink() {
+	tw_upstream 2>/dev/null
+}
+
+portal_include_sec() {
+	uci show firewall 2>/dev/null \
+		| sed -n "s|^firewall\.\([^.]*\)\.path='$FW_PORTAL'$|\1|p" | head -n 1
+}
+
+# NOTE: fw4 skips script includes that are not flagged fw4_compatible (it
+# only logs a warning), which would leave the portal rule unrestored after
+# every firewall reload. Includes made by older versions get the flag too.
+portal_ensure_include() {
+	local s
+	s=$(portal_include_sec)
+	if [ -n "$s" ]; then
+		[ "$(uci -q get "firewall.$s.fw4_compatible")" = "1" ] && return 0
+	else
+		s=$(uci add firewall include 2>/dev/null) || return 0
+		[ -n "$s" ] || return 0
+		uci set "firewall.$s.path=$FW_PORTAL" 2>/dev/null
+	fi
+	uci set "firewall.$s.fw4_compatible=1" 2>/dev/null
+	uci commit firewall 2>/dev/null
+	return 0
+}
+
+portal_handles() {
+	nft --handle list chain inet fw4 dstnat 2>/dev/null \
+		| awk '/tw-portal/ { print $NF }'
+}
+
+# Point every DNS answer at the router ($1, empty to clear): with no
+# upstream, lookups fail and phones never send the HTTP probes that trigger
+# the portal popup — the hijack makes detection work. Only catch-all
+# (/#/…) entries are managed; anything else is left alone. dnsmasq
+# restarts only when the set actually changed.
+portal_dns_addrs() {
+	# All address= values, one per line. NOTE: $sec is regex-escaped
+	# (anonymous sections look like @dnsmasq[0]) and one uci-show line can
+	# carry several quoted values.
+	local sec="$1" sec_re
+	sec_re=$(printf '%s' "$sec" | sed 's/\[/\\[/g; s/\]/\\]/g')
+	uci show dhcp 2>/dev/null \
+		| sed -n "s/^dhcp\.$sec_re\.address=//p" | tr ' ' '\n' | tr -d "'"
+}
+
+portal_dns_sync() {
+	local want="$1" sec a seen changed=0
+	sec=$(uci show dhcp 2>/dev/null \
+		| sed -n 's/^dhcp\.\([^.]*\)=dnsmasq/\1/p' | head -n 1)
+	[ -n "$sec" ] || return 0
+	seen=" "
+	for a in $(portal_dns_addrs "$sec"); do
+		case "$a" in
+			/#/*)
+				if [ "$a" = "/#/$want" ]; then
+					case "$seen" in
+						*" $a "*) uci del_list "dhcp.$sec.address=$a" 2>/dev/null
+							changed=1 ;;
+					esac
+					seen="$seen$a "
+				else
+					uci del_list "dhcp.$sec.address=$a" 2>/dev/null
+					changed=1
+				fi ;;
+		esac
+	done
+	if [ -n "$want" ]; then
+		portal_dns_addrs "$sec" | grep -qxF "/#/$want" \
+			|| { uci add_list "dhcp.$sec.address=/#/$want" 2>/dev/null; changed=1; }
+	fi
+	if [ "$changed" = "1" ]; then
+		uci commit dhcp 2>/dev/null
+		${TW_DNSMASQ_INIT:-/etc/init.d/dnsmasq} restart >/dev/null 2>&1
+	fi
+}
+
+portal_lan_dev() {
+	local d
+	d=$(uci -q get network.lan.device)
+	echo "${d:-br-lan}"
+}
+
+portal_lan_ip() {
+	local ip
+	ip=$(uci -q get network.lan.ipaddr)
+	[ -n "$ip" ] && { echo "$ip"; return 0; }
+	ip -o -4 addr show dev "$(portal_lan_dev)" 2>/dev/null \
+		| awk '{ print $4 }' | cut -d/ -f1 | head -n 1
+}
+
+# Only pages carrying our wizard URL are ours to replace or remove.
+portal_is_ours() {
+	grep -q 'cgi-bin/luci/admin/travelwizard' "$1" 2>/dev/null
+}
+
+portal_remove_probes() {
+	local f
+	for f in $PROBE_FILES; do
+		portal_is_ours "$WWW_DIR/$f" && rm -f "$WWW_DIR/$f"
+	done
+	return 0
+}
+
+# Write the probe pages (compare first: hotplug runs often, flash is finite).
+portal_write_probes() {
+	local ip="$1" url f tmp
+	[ -n "$ip" ] || return 0
+	url="http://$ip/cgi-bin/luci/admin/travelwizard"
+	tmp=$(mktemp -d) || return 0
+	cat >"$tmp/probe" <<EOF
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=$url">
+<title>Travel Router</title></head>
+<body><p>Opening setup&hellip; <a href="$url">continue</a></p>
+<script>location.replace("$url");</script></body></html>
+EOF
+	for f in $PROBE_FILES; do
+		[ -e "$WWW_DIR/$f" ] && ! portal_is_ours "$WWW_DIR/$f" && continue
+		cmp -s "$tmp/probe" "$WWW_DIR/$f" 2>/dev/null \
+			|| cp "$tmp/probe" "$WWW_DIR/$f" 2>/dev/null
+	done
+	rm -rf "$tmp"
+}
+
+portal_on() {
+	local dev ip h
+	dev=$(portal_lan_dev)
+	ip=$(portal_lan_ip)
+	if [ -z "$(portal_handles)" ]; then
+		nft add rule inet fw4 dstnat iifname \"$dev\" tcp dport 80 \
+			redirect to :80 comment \"tw-portal\" 2>/dev/null
+	fi
+	portal_write_probes "$ip"
+	[ -n "$ip" ] && portal_dns_sync "$ip"
+}
+
+# With an uplink the probe pages must go too: a client that still reaches
+# the router for one (cached DNS, a hardcoded probe IP) would otherwise be
+# told it is captive and sent to setup while the internet works.
+portal_off() {
+	local h
+	for h in $(portal_handles); do
+		nft delete rule inet fw4 dstnat handle "$h" 2>/dev/null
+	done
+	portal_remove_probes
+	portal_dns_sync ""
+}
+
+portal_json() { # $1=true/false $2=uplink
+	printf '{"portal":%s,"uplink":"%s"}\n' "$1" "$2"
+}
+
+cmd_auto() {
+	portal_ensure_include
+	local up
+	if up=$(portal_uplink); then
+		portal_off
+		portal_json false "$up"
+	else
+		portal_on
+		portal_json true ""
+	fi
+}
+
+cmd_status() {
+	local up
+	up=$(portal_uplink) || up=""
+	if [ -n "$(portal_handles)" ]; then
+		portal_json true "$up"
+	else
+		portal_json false "$up"
+	fi
+}
+
+cmd_uninstall() {
+	portal_off
+	local s
+	for s in $(uci show firewall 2>/dev/null \
+		| sed -n "s|^firewall\.\([^.]*\)\.path='$FW_PORTAL'$|\1|p"); do
+		uci delete "firewall.$s" 2>/dev/null
+	done
+	uci commit firewall 2>/dev/null
+}
+
+case "${1:-auto}" in
+	auto) cmd_auto ;;
+	status) cmd_status ;;
+	uninstall) cmd_uninstall ;;
+	*) echo "usage: tw-portal auto|status|uninstall" >&2; exit 1 ;;
+esac
+exit 0

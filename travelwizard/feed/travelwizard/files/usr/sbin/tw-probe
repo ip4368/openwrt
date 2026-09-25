@@ -1,0 +1,224 @@
+#!/bin/sh
+# Full end-to-end probe of one imported proxy endpoint: spin up a throwaway
+# sing-box with just that endpoint (loopback SOCKS inbound, no TUN), fetch a
+# probe URL through it, and report success + latency. A DNS lookup over UDP
+# through the same instance reports whether the endpoint also carries UDP
+# (informational: HTTPS decides ok). The live tunnel and firewall are
+# untouched.
+# Usage: tw-probe '<profile-id>' '<endpoint-tag>'
+[ -r /usr/share/libubox/jshn.sh ] && . /usr/share/libubox/jshn.sh || NO_JSHN=1
+. "${TW_COMMON:-/usr/lib/travelwizard/common.sh}"
+
+ID="$1"
+TAG="$2"
+SB_DIR="${TW_SB_DIR:-/etc/sing-box}"
+SB_BIN="${TW_SINGBOX_BIN:-sing-box}"
+CURL_BIN="${TW_CURL_BIN:-curl}"
+NSLOOKUP_BIN="${TW_NSLOOKUP_BIN:-nslookup}"
+SUBIMPORT="${TW_SUBIMPORT:-/usr/sbin/tw-sub-import}"
+PROBE_URL="${TW_PROBE_URL:-https://www.gstatic.com/generate_204}"
+DNS_NAME="${TW_PROBE_DNS_NAME:-www.gstatic.com}"
+READY_WAIT="${TW_READY_WAIT:-4}"
+PROC_TCP="${TW_PROC_NET_TCP:-/proc/net/tcp}"
+PROC_TCP6="${TW_PROC_NET_TCP6:-/proc/net/tcp6}"
+PROC_DIR="${TW_PROC_DIR:-/proc}"
+LOCK_DIR="${TW_PROBE_LOCK_DIR:-/tmp/tw-probe-locks}"
+PORT_BASE="${TW_PROBE_PORT_BASE:-19800}"
+PORT_SPAN="${TW_PROBE_PORT_SPAN:-100}"
+TRIES="${TW_PROBE_TRIES:-5}"
+
+jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+fail() { # $1 message for the tag (or plain error when no tag yet)
+	if [ -z "$NO_JSHN" ]; then
+		json_init
+		[ -n "$TAG" ] && json_add_string tag "$TAG"
+		json_add_boolean ok 0
+		json_add_string error "$1"
+		json_dump
+	else
+		printf '{"tag":"%s","ok":false,"error":"%s"}\n' \
+			"$(jesc "$TAG")" "$(jesc "$1")"
+	fi
+	exit 1
+}
+
+# --- validate + resolve the endpoint's source link -------------------------
+case "$ID" in ''|*/*|*..*|*[^A-Za-z0-9_.-]*) fail "bad profile id" ;; esac
+[ -n "$TAG" ] || fail "missing endpoint tag"
+MAP="$SB_DIR/tw-$ID.map"
+[ -s "$MAP" ] || fail "no endpoint index for this profile (refresh the subscription first)"
+LINK=$(awk -F'\t' -v t="$TAG" '$1 == t { print substr($0, length($1) + 2); exit }' "$MAP")
+[ -n "$LINK" ] || fail "unknown endpoint"
+command -v "$SB_BIN" >/dev/null 2>&1 || fail "sing-box not installed"
+command -v "$CURL_BIN" >/dev/null 2>&1 || fail "curl not installed"
+
+TMP=$(mktemp -d)
+SB_PID=""; LOCKED=""
+stop_instance() {
+	[ -n "$SB_PID" ] && kill "$SB_PID" 2>/dev/null
+	[ -n "$SB_PID" ] && wait "$SB_PID" 2>/dev/null
+	SB_PID=""
+}
+cleanup() {
+	stop_instance
+	[ -n "$LOCKED" ] && rm -rf "$LOCK_DIR/$LOCKED"
+	rm -rf "$TMP"
+}
+trap cleanup EXIT
+
+have_proc() { # true when kernel socket tables are readable
+	[ -r "$PROC_TCP" ] || [ -r "$PROC_TCP6" ]
+}
+
+listen_inodes() { # $1 port: socket inodes LISTENing locally on :$1
+	local f hex
+	hex=$(printf '%04X' "$1")
+	for f in "$PROC_TCP" "$PROC_TCP6"; do
+		[ -r "$f" ] || continue
+		# NOTE: match state 0A (LISTEN) on the *local* address only. A
+		# plain substring match also hits TIME_WAIT leftovers from the
+		# previous probe and the remote side of live connections, which
+		# fakes readiness on a port where nothing accepts (curl exit 7).
+		awk -v pat=":$hex\$" 'NR > 1 && $2 ~ pat && $4 == "0A" { print $10 }' "$f"
+	done
+}
+
+owns_socket() { # $1 inode: true when our instance (or its child) holds it
+	local pid fd
+	# coreutils timeout forks sing-box as a child; BusyBox timeout execs it
+	for pid in "$SB_PID" $(grep -l "^PPid:[[:space:]]*$SB_PID\$" \
+		"$PROC_DIR"/[0-9]*/status 2>/dev/null | sed 's#/status$##; s#.*/##'); do
+		for fd in "$PROC_DIR/$pid"/fd/*; do
+			[ "$(readlink "$fd" 2>/dev/null)" = "socket:[$1]" ] && return 0
+		done
+	done
+	return 1
+}
+
+ready() { # $1 port: our instance is accepting on it
+	local ino
+	for ino in $(listen_inodes "$1"); do
+		# No per-process view (no /proc/self): the LISTEN entry is all
+		# there is to go on; the curl probe below is the real check.
+		[ -d "$PROC_DIR/self" ] || return 0
+		# Somebody else's listener on our port is not our proxy.
+		owns_socket "$ino" && return 0
+	done
+	return 1
+}
+
+reserve() { # $1 port: take the per-port lock shared by concurrent probes
+	local pid
+	if ! mkdir "$LOCK_DIR/$1" 2>/dev/null; then
+		pid=$(cat "$LOCK_DIR/$1/pid" 2>/dev/null)
+		# reclaim only locks whose owner is known to be gone
+		[ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null || return 1
+		rm -rf "$LOCK_DIR/$1"
+		mkdir "$LOCK_DIR/$1" 2>/dev/null || return 1
+	fi
+	echo "$$" >"$LOCK_DIR/$1/pid"
+	LOCKED="$1"
+}
+
+release() {
+	[ -n "$LOCKED" ] && rm -rf "$LOCK_DIR/$LOCKED"
+	LOCKED=""
+}
+
+start_instance() { # $1 port $2 dns listen ip or "": true once it accepts
+	local n=0
+	TW_INBOUND=socks TW_SOCKS_PORT="$1" TW_DNS_PROBE_IP="$2" \
+		TW_SINGBOX_BIN="$SB_BIN" "$SUBIMPORT" "$LINK" \
+		"$TMP/probe.json" >/dev/null 2>&1 || return 1
+	# timeout(1) bounds the instance even if this script is orphaned
+	# (e.g. the HTTP worker dies mid-probe): no stale listener survives
+	# to confuse the next probe.
+	if command -v timeout >/dev/null 2>&1; then
+		timeout 120 "$SB_BIN" run -c "$TMP/probe.json" </dev/null >/dev/null 2>&1 &
+	else
+		"$SB_BIN" run -c "$TMP/probe.json" </dev/null >/dev/null 2>&1 &
+	fi
+	SB_PID=$!
+	while [ "$n" -lt "$((READY_WAIT * 2))" ]; do
+		kill -0 "$SB_PID" 2>/dev/null || break # died: port clash etc.
+		if have_proc; then
+			ready "$1" && return 0
+		else
+			# Off-target (no /proc): give the process a moment, then
+			# trust aliveness; the curl probe below is the real check.
+			sleep 2
+			kill -0 "$SB_PID" 2>/dev/null && return 0
+			break
+		fi
+		sleep 0.5 2>/dev/null || sleep 1
+		n=$((n + 1))
+	done
+	stop_instance
+	return 1
+}
+
+# --- start a throwaway sing-box on a free loopback port --------------------
+# Concurrent probes (Test all) each reserve their port through a lock
+# directory, starting at a PID-derived offset so they rarely collide, and
+# the readiness check only trusts a listener owned by this instance.
+mkdir -p "$LOCK_DIR"
+PORT=""; DNS_IP=""; k=0; started=0
+while [ "$k" -lt "$PORT_SPAN" ] && [ "$started" -lt "$TRIES" ]; do
+	CAND=$((PORT_BASE + ($$ + k) % PORT_SPAN))
+	k=$((k + 1))
+	reserve "$CAND" || continue
+	started=$((started + 1))
+	# a per-port loopback address, so concurrent probes never share :53
+	IP="127.77.$((CAND / 250 % 250 + 1)).$((CAND % 250 + 1))"
+	if start_instance "$CAND" "$IP"; then
+		PORT="$CAND"; DNS_IP="$IP"; break
+	fi
+	# Some builds or kernels reject the extra UDP listener: probe
+	# HTTPS alone rather than failing the endpoint over it.
+	if start_instance "$CAND" ""; then
+		PORT="$CAND"; break
+	fi
+	release
+done
+[ -n "$PORT" ] || fail "could not start a probe instance (no free local port)"
+
+# --- measure one HTTPS fetch through the endpoint ---------------------------
+MEASURE=$("$CURL_BIN" -s -o /dev/null -w '%{http_code} %{time_total}' \
+	--max-time 12 -x "socks5h://127.0.0.1:$PORT" "$PROBE_URL" 2>/dev/null)
+RC=$?
+CODE=${MEASURE%% *}; SECS=${MEASURE##* }
+case "$RC" in
+	0) : ;;
+	28) fail "probe timed out after 12s" ;;
+	*) fail "probe failed (curl exit $RC)" ;;
+esac
+case "$CODE" in
+	2*) : ;;
+	*) fail "endpoint answered HTTP $CODE" ;;
+esac
+MS=$(awk -v t="$SECS" 'BEGIN { printf "%.0f", t * 1000 }')
+[ -n "$MS" ] || fail "could not parse probe timing"
+
+# --- UDP: one DNS lookup relayed through the endpoint ----------------------
+UDP=untested
+if [ -n "$DNS_IP" ] && command -v "$NSLOOKUP_BIN" >/dev/null 2>&1; then
+	if command -v timeout >/dev/null 2>&1; then
+		ANSWER=$(timeout 6 "$NSLOOKUP_BIN" "$DNS_NAME" "$DNS_IP" 2>/dev/null | tw_ns_answer)
+	else
+		ANSWER=$("$NSLOOKUP_BIN" "$DNS_NAME" "$DNS_IP" 2>/dev/null | tw_ns_answer)
+	fi
+	if [ -n "$ANSWER" ]; then UDP=ok; else UDP=failed; fi
+fi
+
+if [ -z "$NO_JSHN" ]; then
+	json_init
+	json_add_string tag "$TAG"
+	json_add_boolean ok 1
+	json_add_int latency_ms "$MS"
+	json_add_string http_code "$CODE"
+	json_add_string udp "$UDP"
+	json_dump
+else
+	printf '{"tag":"%s","ok":true,"latency_ms":%s,"http_code":"%s","udp":"%s"}\n' \
+		"$(jesc "$TAG")" "$MS" "$(jesc "$CODE")" "$UDP"
+fi
