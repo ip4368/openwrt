@@ -331,6 +331,7 @@ box-shadow:var(--shadow);font-weight:500}
 					<div class="tw-network-pill"><small><%:Setup · direct internet%></small><strong id="ssid-mgmt">…</strong></div>
 					<div class="tw-network-pill"><small><%:Private · VPN only%></small><strong id="ssid-vault">…</strong></div>
 				</div>
+				<p class="tw-muted" id="lan-overview"><%:Wired LAN: checking the side switch…%></p>
 				<p class="tw-hero-warn" id="hero-defpw" hidden>⚠ <%:These networks still use the default passwords. Change them in the Wi-Fi tab.%></p>
 			</div>
 			<div class="tw-card tw-col-4">
@@ -526,6 +527,12 @@ box-shadow:var(--shadow);font-weight:500}
 				<div class="tw-qr" id="qr-vault" hidden></div>
 			</div>
 		</div>
+		<div class="tw-card" id="card-lan-switch" style="margin-top:16px">
+			<div class="tw-card-header"><div><h2><%:Side switch and wired LAN%></h2>
+				<p><%:The side switch puts the LAN jack on either the setup network (direct) or the private network (VPN only).%></p></div></div>
+			<div class="tw-callout" id="lan-switch-status"><%:Checking the switch…%></div>
+			<p class="tw-muted tw-mt"><%:Flipping it briefly disconnects the wired device so it can obtain an address from the selected network.%></p>
+		</div>
 	</section>
 
 	</main>
@@ -693,8 +700,10 @@ function showPanel(name, focus) {
 	/* landing on Internet with no link: scan right away, don't wait */
 	if (name === 'internet' && !CUR_WIFI.up && LAST_SCAN === null && !el('btn-scan').disabled)
 		loadScan();
-	if (name === 'wifi')
+	if (name === 'wifi') {
 		refreshQr();
+		loadLanStatus();
+	}
 }
 all('[data-panel]').forEach(function(b) {
 	b.addEventListener('click', function() { showPanel(b.getAttribute('data-panel')); });
@@ -708,7 +717,7 @@ all('[data-go]').forEach(function(b) {
 
 /* ---- overview: one state object drives tiles, tab dots and next step ---- */
 var STATE = { up: null, active: '', wifiSsid: '', net: '', loginUrl: '',
-	profiles: null, health: null, wifi: null };
+	profiles: null, health: null, wifi: null, lan: null };
 var NEXT_ACTION = null;
 function activeProfile() {
 	var a = null;
@@ -921,6 +930,7 @@ function settleWifi(want, then) {
 function heartbeat() {
 	if (document.hidden) return;
 	var before = linkKey();
+	loadLanStatus();
 	refreshUpstream().then(function(ok) {
 		if (ok && linkKey() !== before) { refreshSaved(); checkCaptive(); checkHealth(); }
 	});
@@ -1752,7 +1762,36 @@ el('btn-sub-save').addEventListener('click', function() {
 	});
 });
 
-/* ---- wi-fi: own network names, passwords and join codes ---- */
+/* ---- local networks: Wi-Fi names, join codes and wired-LAN switch ---- */
+function paintLanStatus() {
+	var s = STATE.lan || {}, w = STATE.wifi || {};
+	var box = el('lan-switch-status'), overview = el('lan-overview');
+	if (STATE.lan === null) {
+		box.textContent = '<%:Checking the switch…%>';
+		overview.textContent = '<%:Wired LAN: checking the side switch…%>';
+		setKind(box, '');
+	} else if (s.mode === 'protected') {
+		var vn = w.vault_ssid || '<%:private network%>';
+		box.textContent = '<%:Protected mode%> — <%:the LAN jack uses%> ' + vn + ' (<%:VPN only%>).';
+		overview.textContent = '<%:Wired LAN:%> <%:protected network%> · ' + vn;
+		setKind(box, 'good');
+	} else if (s.mode === 'direct') {
+		var mn = w.mgmt_ssid || '<%:setup network%>';
+		box.textContent = '<%:Direct mode%> — <%:the LAN jack uses%> ' + mn + '.';
+		overview.textContent = '<%:Wired LAN:%> <%:direct network%> · ' + mn;
+		setKind(box, '');
+	} else {
+		box.textContent = s.error ? errMsg(s) : '<%:The LAN jack is not attached to either local network.%>';
+		overview.textContent = '<%:Wired LAN: needs attention%>';
+		setKind(box, 'bad');
+	}
+}
+function loadLanStatus() {
+	return post('/lan_status', {}).then(function(j) {
+		STATE.lan = j || { error: '<%:Could not read the side switch%>' };
+		paintLanStatus();
+	});
+}
 function loadWifi() {
 	return post('/wifi_get', {}).then(function(j) {
 		if (j.error) { note('wifi-msg', errMsg(j), 'bad'); return; }
@@ -1765,6 +1804,7 @@ function loadWifi() {
 		el('ssid-mgmt').textContent = j.mgmt_ssid || '—';
 		el('ssid-vault').textContent = j.vault_ssid || '—';
 		el('mgmt-name').textContent = j.mgmt_ssid || '…';
+		paintLanStatus();
 		updateOverview();
 	});
 }
@@ -1809,6 +1849,7 @@ function refreshAll() {
 	refreshProfiles();
 	refreshSaved();
 	loadWifi();
+	loadLanStatus();
 }
 updateOverview();
 refreshAll();

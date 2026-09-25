@@ -5,10 +5,12 @@ config main 'main'
 	# SSID whose traffic must always go through the VPN/proxy, or nowhere.
 	option vault_ssid 'Travel-Vault'
 	option vault_key 'travel-vault-please-change'
-	# LAN (mgmt + wired) and vault IPv4 gateways. tw-subnet-fix rewrites
-	# these when the upstream network overlaps.
+	# Direct LAN and protected vault IPv4 gateways. tw-subnet-fix rewrites
+	# these when the upstream network overlaps. The GL-MT3000's physical LAN
+	# jack (eth1) moves between their bridges with the side switch.
 	option lan_net '192.168.40.1/24'
 	option vault_net '10.20.30.1/24'
+	option lan_port 'eth1'
 	# DNS servers handed to vault clients. Queries are forwarded through the
 	# tunnel like any other vault traffic; a WireGuard profile's own DNS
 	# takes precedence while it is active.

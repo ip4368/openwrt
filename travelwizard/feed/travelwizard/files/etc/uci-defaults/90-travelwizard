@@ -21,9 +21,22 @@ uci set network.vault='interface'
 uci set network.vault.proto='static'
 uci set network.vault.ipaddr="$VAULT_IP"
 uci set network.vault.netmask='255.255.255.0'
-brsec=$(uci add network device)
-uci set network."$brsec".name='br-vault'
-uci set network."$brsec".type='bridge'
+# Reuse a br-vault section if one already exists (e.g. this script re-run
+# after its marker was removed): a second section with the same name would
+# confuse netifd.
+brsec=""
+for sec in $(uci show network 2>/dev/null \
+	| sed -n 's/^network\.\([^.]*\)=device/\1/p'); do
+	if [ "$(uci -q get "network.$sec.name" 2>/dev/null)" = "br-vault" ]; then
+		brsec="$sec"
+		break
+	fi
+done
+if [ -z "$brsec" ]; then
+	brsec=$(uci add network device)
+	uci set network."$brsec".name='br-vault'
+	uci set network."$brsec".type='bridge'
+fi
 uci set network.vault.device='br-vault'
 
 uci -q delete network.vpntun

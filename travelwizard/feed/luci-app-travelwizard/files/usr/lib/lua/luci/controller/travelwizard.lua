@@ -32,6 +32,7 @@ function index()
 	entry({ "admin", "travelwizard", "api", "wlan_forget" }, post("api_wlan_forget")).leaf = true
 	entry({ "admin", "travelwizard", "api", "wlan_disconnect" }, post("api_wlan_disconnect")).leaf = true
 	entry({ "admin", "travelwizard", "api", "wifi_qr" }, post("api_wifi_qr")).leaf = true
+	entry({ "admin", "travelwizard", "api", "lan_status" }, post("api_lan_status")).leaf = true
 end
 
 local function run_json(cmd)
@@ -92,6 +93,10 @@ function api_wifi_qr()
 		return
 	end
 	run_json("/usr/sbin/tw-wifi-qr %s" % util.shellquote(net))
+end
+
+function api_lan_status()
+	run_json("/usr/sbin/tw-lan-switch status")
 end
 
 -- Saved upstream networks (SSID + metadata only; keys stay on the router).
@@ -736,5 +741,4 @@ function api_wifi_set()
 	local out = util.exec("/usr/sbin/tw-wifi-apply")
 	http.write(out and #out > 0 and out or '{"error":"apply failed"}')
 end
-
 

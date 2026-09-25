@@ -1,0 +1,14 @@
+#!/bin/sh
+# The GL-MT3000 mode switch is an EV_SW input: pressed/released are its two
+# stable positions, not a momentary button press.
+[ "${TYPE:-switch}" = "switch" ] || exit 0
+
+case "$ACTION" in
+	pressed) MODE=protected ;;
+	released) MODE=direct ;;
+	*) exit 0 ;;
+esac
+
+SWITCH_BIN=${TW_LAN_SWITCH_BIN:-/usr/sbin/tw-lan-switch}
+"$SWITCH_BIN" "$MODE" >/dev/null 2>&1
+exit 0

@@ -31,12 +31,14 @@ ethernet WAN ──(wan)───────┘                      └── 
                                               pbr: vault subnet ──> tunnel only
                                               firewall: NO vault->wan forwarding
                                               (wan zone forward pinned to REJECT)
+
+side switch ──> physical LAN jack joins Setup/direct or Vault/protected bridge
 ```
 
 | SSID | Network | Zone | Path |
 |---|---|---|---|
-| `Travel-Setup` (+ wired LAN) | `lan` 192.168.40.1/24¹ | lan | direct to wan/wwan |
-| `Travel-Vault` | `vault` 10.20.30.1/24¹ | vault → vpn only | WireGuard / OpenVPN / sing-box TUN, else nothing |
+| `Travel-Setup` (+ wired LAN in direct position) | `lan` 192.168.40.1/24¹ | lan | direct to wan/wwan |
+| `Travel-Vault` (+ wired LAN in protected position) | `vault` 10.20.30.1/24¹ | vault → vpn only | WireGuard / OpenVPN / sing-box TUN, else nothing |
 
 ¹ Defaults, editable in the wizard; `tw-subnet-fix` also re-addresses on
 upstream overlap (see below).
@@ -68,9 +70,11 @@ The `vpn` firewall zone statically matches all tunnel interfaces (`tw_wg`,
   - `files/usr/sbin/tw-vpn-health` — tunnel state + direct-vs-vault egress IPs + leak verdict
   - `files/usr/sbin/tw-wifi-apply` — rename/rekey both SSIDs on all radios
   - `files/usr/sbin/tw-upstream` — report/set preferred upstream (wifi/ethernet/auto) via route metrics
+  - `files/usr/sbin/tw-lan-switch` — report/move the physical LAN jack between the direct and protected bridges
   - `files/usr/lib/travelwizard/common.sh` — upstream detect, IPv4 math, kill-switch audit, vault DNS/pbr helpers
   - `files/etc/uci-defaults/90-travelwizard` — first-boot network/wireless/firewall/dhcp layout
   - `files/etc/hotplug.d/iface/30-tw-subnet` — re-run subnet fix when upstream (re)connects
+  - `files/etc/rc.button/BTN_0` + `files/etc/init.d/tw-lan-switch` — apply both side-switch positions and replay its physical state at boot
 - `feed/luci-app-travelwizard/` — LuCI app: first menu entry, JSON API +
   standalone app-style UI (`wizard.htm`, no JS build step, no LuCI chrome):
   a tile dashboard where each tile opens one settings screen, plus an
@@ -117,7 +121,9 @@ tile shows live status (green/amber/red dot + one-line preview):
   re-fetch the subscription.
 - **My Wi-Fi** — rename/rekey both SSIDs on all radios (tile warns while the
   default passwords are still in place), each with a scannable join QR
-  (`tw-wifi-qr` + `/wifi_qr`, regenerated on save).
+  (`tw-wifi-qr` + `/wifi_qr`, regenerated on save). This screen also shows
+  whether the side switch currently places the wired LAN jack on the direct
+  or protected network.
 - **Setup portal** — while the router has no upstream link, `tw-portal`
   (driven by the wwan/wan hotplug hook, a boot init script, and a firewall
   include that survives `fw4` restarts) answers all DNS with the router IP
@@ -198,9 +204,11 @@ the wizard's Wi-Fi section on first login.
   about. If you want v2rayA's full UI later, add the `v2raya-openwrt` feed and
   its packages to `build.sh`/`mt3000.diffconfig`; the vault policy route works
   with any TUN device.
-- **No side-switch support in v1** — the two SSIDs already give you
-  VPN-or-nothing vs direct. The DTS exposes it (`mode`/`BTN_0`), so a later
-  `tw-vpn-toggle` + hotplug on `BTN_0` is a small addition.
+- **The side switch selects the wired LAN path.** Its high/`pressed` position
+  adds the GL-MT3000 LAN jack (`eth1`) to `br-vault`; its low/`released`
+  position returns it to `br-lan`. The helper persists the bridge membership,
+  reloads netifd and bounces the physical link so the attached device renews
+  DHCP. A late init hook replays the real switch position on every boot.
 - **pbr does the policy routing.** Hand-rolled rules/tables for three tunnel
   types is where leaks hide; pbr watches tunnel state and we add one policy.
   If pbr is missing, `tw-vpn-apply` says so instead of pretending.
@@ -228,10 +236,14 @@ tw-wan-join 'Hotel_WiFi' 'secret'   # then check the wizard UI too
 tw-captive-check
 tw-sub-import 'https://example.com/sub'   # or a single 'vless://…' link
 tw-probe 'p1_xxx' 'endpoint name'   # full latency test of one endpoint
+tw-lan-switch status                # direct or protected wired LAN
 uci set travelwizard.main.vpn_mode='singbox'; uci commit; tw-vpn-apply
 tw-vpn-health
 ```
 
 Then: join `Travel-Vault` from a phone and confirm the egress IP differs from
 `Travel-Setup`'s; stop the tunnel (`vpn_mode=off` + apply) and confirm the
-vault has no route at all.
+vault has no route at all. Flip the side switch in each direction and confirm
+`tw-lan-switch status` changes between `direct` and `protected`; a wired client
+should renew into the matching subnet and obey the same egress/kill-switch
+rules as that network's Wi-Fi clients.

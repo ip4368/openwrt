@@ -1,0 +1,25 @@
+#!/bin/sh /etc/rc.common
+# gpio-button-hotplug reports an EV_SW's current position when it probes, but
+# its first probe happens during preinit, where OpenWrt only runs the failsafe
+# button handler. Re-probe once normal hotplug handling is ready so every boot
+# follows the physical side-switch position even if it was moved while off.
+START=98
+
+replay_switch_position() {
+	if grep -q '^gpio_button_hotplug ' /proc/modules 2>/dev/null; then
+		rmmod gpio_button_hotplug >/dev/null 2>&1 || {
+			logger -t travelwizard "could not replay side-switch position: module is busy"
+			return 0
+		}
+	fi
+	modprobe gpio-button-hotplug >/dev/null 2>&1 || \
+		logger -t travelwizard "could not load side-switch driver"
+}
+
+boot() {
+	replay_switch_position
+}
+
+start() {
+	replay_switch_position
+}

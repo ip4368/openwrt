@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-travelwizard
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_LICENSE:=MIT
 PKGARCH:=all
 
@@ -23,8 +23,9 @@ endef
 
 define Package/luci-app-travelwizard/description
  End-user setup wizard for the single-purpose travel-router: join upstream
- Wi-Fi, pass captive portals, configure VPN/proxy for the vault SSID, and
- verify the tunnel. Links out to full LuCI as "Advanced".
+ Wi-Fi, pass captive portals, select the wired LAN path, configure VPN/proxy
+ for the vault network, and verify the tunnel. Links out to full LuCI as
+ "Advanced".
 endef
 
 define Build/Prepare
