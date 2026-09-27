@@ -3,9 +3,16 @@
 # Usage: tw-wan-join '<ssid>' '[key]' '[band]' '[enc-hint]' '[bssid]'
 # band: 2g | 5g (places the sta iface on the matching radio).
 # enc-hint: scan encryption string (picks the right WPA mode).
-# Runs subnet-conflict fix + captive-portal check and prints combined JSON.
-. /usr/share/libubox/jshn.sh
-. /usr/lib/travelwizard/common.sh
+# Runs the subnet-conflict fix, lifts our setup portal, and returns as soon
+# as the link is usable ("internet":null). Captive detection is left to the
+# UI's own request: up to three eight-second probes here held the reply past
+# uhttpd's 60 s script timeout, so a join that worked looked like it failed.
+# TW_JSHN/TW_COMMON/TW_SUBNET_FIX/TW_PORTAL override the stock paths for tests.
+. "${TW_JSHN:-/usr/share/libubox/jshn.sh}"
+. "${TW_COMMON:-/usr/lib/travelwizard/common.sh}"
+
+SUBNET_FIX="${TW_SUBNET_FIX:-/usr/sbin/tw-subnet-fix}"
+PORTAL="${TW_PORTAL:-/usr/sbin/tw-portal}"
 
 SSID="$1"
 KEY="$2"
@@ -82,11 +89,18 @@ tw_saved_upsert "$SSID" "$KEY" "$BAND" "$ENCHINT" "$BSSID"
 uci commit travelwizard
 lock -u /var/lock/tw-saved
 
-SUBNET_JSON=$(/usr/sbin/tw-subnet-fix 2>/dev/null)
+# Lift the setup portal now: hotplug normally does it on ifup, but a missed
+# or early event would leave phones stuck behind the "sign in" hijack (DNS
+# catch-all + port-80 redirect) even though the uplink works. Deriving the
+# state again here is cheap and idempotent.
+"$PORTAL" auto >/dev/null 2>&1
+
+SUBNET_JSON=$("$SUBNET_FIX" 2>/dev/null)
 [ -z "$SUBNET_JSON" ] && SUBNET_JSON='{"changed":false}'
-CAPTIVE_JSON=$(/usr/sbin/tw-captive-check 2>/dev/null)
-[ -z "$CAPTIVE_JSON" ] && CAPTIVE_JSON='{"state":"unknown"}'
+# Once more after subnet-fix: it may restart the network (bouncing wwan),
+# and a hotplug event lost in that window must not leave the portal up.
+"$PORTAL" auto >/dev/null 2>&1
 
 SSID_JSON=$(printf '%s' "$SSID" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')
-printf '{"linked":true,"ssid":%s,"radio":"%s","subnet":%s,"internet":%s}\n' \
-	"$SSID_JSON" "$RADIO" "$SUBNET_JSON" "$CAPTIVE_JSON"
+printf '{"linked":true,"ssid":%s,"radio":"%s","subnet":%s,"internet":null}\n' \
+	"$SSID_JSON" "$RADIO" "$SUBNET_JSON"

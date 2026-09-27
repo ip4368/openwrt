@@ -109,6 +109,10 @@ uci set dhcp.vault.dhcpv4='server' # explicit: v4 only, no v6 RA/DHCPv6
 # Vault clients get public resolvers, not the router: dnsmasq resolves over
 # the direct upstream, which would leak vault lookups around the tunnel.
 tw_set_vault_dns "$(uci -q get travelwizard.main.vault_dns)"
+# Stable setup name for the setup network (vault clients don't use the
+# router for DNS, so this is setup-only by design). tw-subnet-fix keeps it
+# on the current LAN address across subnet moves.
+uci add_list dhcp.@dnsmasq[0].address="/secure.router/$LAN_IP"
 
 # --- firewall: vault may only leave through the vpn zone -------------------
 # Zone for tunnel interfaces. tw-vpn-apply just starts/stops tunnels; the

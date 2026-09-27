@@ -3,8 +3,13 @@
 # per-mode network/service config, point policy routing (pbr) at the tunnel
 # for the vault subnet only, and restart services. Prints JSON.
 # Usage: tw-vpn-apply
-. /usr/share/libubox/jshn.sh
-. /usr/lib/travelwizard/common.sh
+# TW_JSHN/TW_COMMON/TW_SB_LIVE/TW_INIT_DIR/TW_IFUP override the stock paths
+# for tests.
+. "${TW_JSHN:-/usr/share/libubox/jshn.sh}"
+. "${TW_COMMON:-/usr/lib/travelwizard/common.sh}"
+
+INIT_DIR="${TW_INIT_DIR:-/etc/init.d}"
+IFUP="${TW_IFUP:-/sbin/ifup}"
 
 MODE=$(tw_active_mode)
 # Resolve the settings section: active profile, or the legacy per-mode section.
@@ -28,6 +33,23 @@ SB_CONF="${SB_CONF:-/etc/sing-box/config.json}"
 OVPN_CONF="${OVPN_CONF:-/etc/openvpn/tw.conf}"
 
 fail() { echo "{\"error\":\"$1\"}"; exit 1; }
+wait_device() { # $1 device $2 seconds
+	local n=0
+	while ! ip link show "$1" >/dev/null 2>&1 && [ "$n" -lt "$2" ]; do
+		sleep 1; n=$((n + 1))
+	done
+	ip link show "$1" >/dev/null 2>&1
+}
+wait_interface() { # $1 netifd interface $2 seconds (best effort)
+	local n=0 up
+	while [ "$n" -lt "$2" ]; do
+		up=$(ubus call "network.interface.$1" status 2>/dev/null \
+			| jsonfilter -e '@.up' 2>/dev/null)
+		[ "$up" = "true" ] && return 0
+		sleep 1; n=$((n + 1))
+	done
+	return 1
+}
 
 # --- stop everything first ----------------------------------------------
 uci -q delete network.tw_wg
@@ -35,6 +57,11 @@ uci -q delete network.tw_wg_peer
 uci set network.vpntun='interface'
 uci set network.vpntun.proto='none'
 uci set network.vpntun.auto='0'
+# Scrub per-mode vpntun wiring (a singbox run leaves static tun0 address
+# ownership behind, which must not linger into off/wireguard/openvpn).
+uci -q delete network.vpntun.device
+uci -q delete network.vpntun.ipaddr
+uci -q delete network.vpntun.netmask
 uci -q delete openvpn.tw
 uci set openvpn.tw='openvpn'
 uci set openvpn.tw.enabled='0'
@@ -47,9 +74,9 @@ if [ -n "$(uci -q get sing-box.main.enabled 2>/dev/null)" ]; then
 	uci set sing-box.main.enabled='0'
 	uci commit sing-box
 fi
-/etc/init.d/sing-box stop >/dev/null 2>&1
-/etc/init.d/sing-box disable >/dev/null 2>&1
-/etc/init.d/openvpn stop >/dev/null 2>&1
+"$INIT_DIR/sing-box" stop >/dev/null 2>&1
+"$INIT_DIR/sing-box" disable >/dev/null 2>&1
+"$INIT_DIR/openvpn" stop >/dev/null 2>&1
 
 # --- per-mode setup ------------------------------------------------------
 VPN_IF=""
@@ -121,22 +148,21 @@ case "$MODE" in
 			|| fail "proxy config failed sing-box check"
 		uci -q show sing-box.main >/dev/null 2>&1 \
 			|| fail "sing-box service config missing"
-		cp "$SB_CONF" /etc/sing-box/config.json
-		chmod 600 /etc/sing-box/config.json
+		cp "$SB_CONF" "${TW_SB_LIVE:-/etc/sing-box/config.json}"
+		chmod 600 "${TW_SB_LIVE:-/etc/sing-box/config.json}"
+		# netifd owns the TUN address (must match the TUN inbound in
+		# tw-sub-import): with proto=none a reconfigure flushes the
+		# address sing-box assigned as foreign, masquerade falls back
+		# to a LAN IP, and the vault stalls until the next connect.
 		uci set network.vpntun.device='tun0'
+		uci set network.vpntun.proto='static'
+		uci set network.vpntun.ipaddr='172.19.0.1'
+		uci set network.vpntun.netmask='255.255.255.252'
 		uci set network.vpntun.auto='1'
 		uci set sing-box.main.enabled='1'
 		# TUN mode needs privilege (per the init script's own note).
 		uci set sing-box.main.user='root'
 		uci commit sing-box
-		/etc/init.d/sing-box enable >/dev/null 2>&1
-		/etc/init.d/sing-box restart >/dev/null 2>&1
-		n=0
-		while ! ip link show tun0 >/dev/null 2>&1 && [ "$n" -lt 10 ]; do
-			sleep 1; n=$((n + 1))
-		done
-		ip link show tun0 >/dev/null 2>&1 \
-			|| fail "sing-box started but tun0 is missing (see logread for errors)"
 		VPN_IF="vpntun"
 		;;
 	*) fail "unknown vpn mode: $MODE" ;;
@@ -145,11 +171,44 @@ esac
 uci commit network
 uci commit openvpn
 
+# --- bring the tunnel up in netifd before pbr looks for it ----------------
+# netifd must know the new vpntun definition before the tunnel starts, and
+# pbr must only restart once the tunnel is up. The old order restarted pbr
+# first: it found no vpntun and installed no route, so the first connect
+# failed and a second one "fixed" it.
+"$INIT_DIR/network" reload >/dev/null 2>&1
+case "$MODE" in
+	wireguard)
+		"$IFUP" tw_wg >/dev/null 2>&1
+		wait_interface tw_wg 5 || true
+		;;
+	openvpn)
+		"$INIT_DIR/openvpn" restart >/dev/null 2>&1
+		if wait_device tun_tw 10; then
+			"$IFUP" vpntun >/dev/null 2>&1
+			wait_interface vpntun 5 || true
+		fi
+		;;
+	singbox)
+		"$INIT_DIR/sing-box" enable >/dev/null 2>&1
+		"$INIT_DIR/sing-box" restart >/dev/null 2>&1
+		wait_device tun0 10 \
+			|| fail "sing-box started but tun0 is missing (see logread for errors)"
+		"$IFUP" vpntun >/dev/null 2>&1
+		wait_interface vpntun 5 || true
+		;;
+esac
+
 # --- vault DNS: public resolvers through the tunnel, never the router ------
 [ -n "$(tw_dhcp_dns_option "$VAULT_DNS")" ] \
 	|| VAULT_DNS=$(uci -q get travelwizard.main.vault_dns)
 DNS_CHANGED=""
 tw_set_vault_dns "$VAULT_DNS" && { uci commit dhcp; DNS_CHANGED=1; }
+
+# Settle the firewall and DNS before pbr installs its rules, so a later
+# firewall reload is never what makes routing work.
+"$INIT_DIR/firewall" reload >/dev/null 2>&1
+[ -n "$DNS_CHANGED" ] && "$INIT_DIR/dnsmasq" restart >/dev/null 2>&1
 
 # --- policy routing: vault subnet -> VPN only -----------------------------
 # pbr (policy-based routing) watches the tunnel and routes the vault SSID
@@ -185,16 +244,11 @@ if uci -q show pbr >/dev/null 2>&1; then
 	UP_IF=$(tw_upstream 2>/dev/null)
 	[ -n "$UP_IF" ] && uci set pbr.config.uplink_interface="$UP_IF"
 	uci commit pbr
-	/etc/init.d/pbr restart >/dev/null 2>&1
+	"$INIT_DIR/pbr" restart >/dev/null 2>&1
 	PBR="true"
 else
 	PBR="false"
 fi
-
-/etc/init.d/network reload >/dev/null 2>&1
-[ "$MODE" = "openvpn" ] && /etc/init.d/openvpn restart >/dev/null 2>&1
-/etc/init.d/firewall reload >/dev/null 2>&1
-[ -n "$DNS_CHANGED" ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1
 
 json_init
 json_add_string mode "$MODE"
@@ -222,6 +276,39 @@ if [ -n "$TUNDEV" ] && ip link show "$TUNDEV" >/dev/null 2>&1; then
 	done
 	tw_tunnel_routed "$TUNDEV" || \
 		WARN="${WARN:+$WARN; }no route via $TUNDEV (vault has no path; check pbr)"
+fi
+# The reloads above can race sing-box's own TUN address assignment; a
+# missing address breaks masquerade source selection and stalls the vault
+# exactly like the old first-connect failure, so re-assert and verify.
+if [ "$MODE" = "singbox" ] && ip link show tun0 >/dev/null 2>&1; then
+	tw_tun_addr_ensure tun0 172.19.0.1/30 || \
+		WARN="${WARN:+$WARN; }tun0 lost its IPv4 address (vault stalled; reconnect to repair)"
+fi
+# Same ownership problem for OpenVPN, but the address is server-pushed and
+# only known after it connects: adopt whatever tun_tw currently has so
+# later reloads re-assert it instead of flushing it as foreign. Best
+# effort: if the link is not up yet the address is adopted on the next
+# apply, and a server-side re-addressing likewise heals on reconnect.
+if [ "$MODE" = "openvpn" ]; then
+	n=0; OVPN_ADDR=""
+	while [ -z "$OVPN_ADDR" ] && [ "$n" -lt 10 ]; do
+		[ "$n" -gt 0 ] && sleep 1
+		OVPN_ADDR=$(ip -o -4 addr show tun_tw scope global 2>/dev/null | awk '
+			$4 ~ /\// { print $4; exit }
+			$5 == "peer" { split($6, a, "/"); print $4"/"a[2]; exit }')
+		n=$((n + 1))
+	done
+	if [ -n "$OVPN_ADDR" ]; then
+		OVPN_MASK=$(plen2mask "${OVPN_ADDR#*/}")
+		if [ -n "$OVPN_MASK" ]; then
+			uci set network.vpntun.proto='static'
+			uci set network.vpntun.ipaddr="${OVPN_ADDR%/*}"
+			uci set network.vpntun.netmask="$OVPN_MASK"
+			uci commit network
+		fi
+	else
+		WARN="${WARN:+$WARN; }tun_tw has no address yet (reconnect once OpenVPN is connected)"
+	fi
 fi
 [ -n "$WARN" ] && json_add_string warning "$WARN"
 tw_kill_holding && json_add_boolean kill_holding 1 || json_add_boolean kill_holding 0

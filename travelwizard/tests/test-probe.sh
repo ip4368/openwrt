@@ -160,7 +160,7 @@ printf '%s\n' "$SS" | TW_INBOUND=socks TW_SOCKS_PORT=19801 \
 	TW_DNS_PROBE_IP=127.77.80.52 sh "$IMPORT" - "$TMP/p10.json" >/dev/null 2>&1
 check p10-dns-inbound "$(grep -o '"tag":"dns-probe-in","listen":"127.77.80.52","listen_port":53' "$TMP/p10.json")" \
 	'"tag":"dns-probe-in","listen":"127.77.80.52","listen_port":53'
-check p10-dns-rule "$(grep -c '"rules":\[{"inbound":"dns-probe-in","action":"route","outbound":"proxy"},{"port":53' "$TMP/p10.json")" "1"
+check p10-dns-rule "$(grep -c '"rules":\[{"network":"icmp","action":"reject","method":"drop"},{"inbound":"dns-probe-in","action":"route","outbound":"proxy"},{"port":53' "$TMP/p10.json")" "1"
 printf '%s\n' "$SS" | TW_INBOUND=socks TW_DNS_PROBE_IP='127.0.0.1","x' \
 	sh "$IMPORT" - "$TMP/p10b.json" >/dev/null 2>&1
 check p10-dns-garbage "$(grep -c 'dns-probe-in' "$TMP/p10b.json")" "0"

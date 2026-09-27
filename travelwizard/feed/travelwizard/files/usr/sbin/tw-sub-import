@@ -1,7 +1,12 @@
 #!/bin/sh
 # Import a proxy subscription URL or a single proxy link into a sing-box
-# config with a TUN inbound. Supports vmess://, vless://, trojan:// and
-# ss:// links, plain or base64-wrapped subscription bodies.
+# config with a TUN inbound. Supports vmess://, vless://, trojan://,
+# ss://, naive+https:// (naive), hysteria2:// (hy2), tuic:// and anytls://
+# links, plain or base64-wrapped subscription bodies. Naive needs a sing-box
+# build with the naive outbound compiled in (stock OpenWrt omits it): when
+# the installed binary lacks an outbound type (naive, or anytls on older
+# builds), those links are skipped like any other unsupported type instead
+# of poisoning the whole import.
 # Usage: tw-sub-import '<url|link|->' [out-path]
 # Env: TW_DEFAULT_TAG='<tag>' preselects the proxy selector default.
 #      TW_INBOUND=socks (+ TW_SOCKS_PORT) emits a loopback SOCKS inbound
@@ -12,6 +17,19 @@
 #      TW_DNS_PROBE_IP='127.x.y.z' (socks probe configs only) adds a UDP
 #      listener on that loopback address, port 53, relayed to 1.1.1.1
 #      through the proxy, so tw-probe can check the endpoint carries UDP.
+#      TW_FETCH_RETRIES='<n>' (default 1) and TW_FETCH_SLEEP='<s>'
+#      (default 2) tune subscription fetch retries. The default is a single
+#      attempt: retries mask real failures (bad URL, dead server, broken
+#      DNS), so they stay opt-in for genuinely flaky networks. Every failed
+#      attempt is logged to syslog (`logread | grep tw-sub-import`) with the
+#      curl exit code, HTTP status, phase timing, and resolved server IP,
+#      and the final error names the failure reason instead of "unreachable
+#      or HTTP error".
+#      One exception: a TLS verify failure within the first hour past the
+#      image build time is the pre-NTP trap (no RTC: the clock reads the
+#      build date until NTP steps it, failing every cert issued since), so
+#      ntpd is kicked and the fetch waits up to TW_NTP_WAIT seconds
+#      (default 90) for time sync instead of failing outright.
 # The config and its sidecars are staged next to the target and moved into
 # place only after sing-box check passes, so a bad import never replaces a
 # working config.
@@ -39,16 +57,128 @@ urldecode() {
 }
 jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 join_csv() { tr '\n' ',' | sed 's/,$//'; } # busybox has no paste(1)
-tw_fetch() { # $1 url $2 max-time -> body on stdout; hotel wifi flakes,
-	local url="$1" mt="$2" tries="${TW_FETCH_RETRIES:-3}"
-	local sleep_s="${TW_FETCH_SLEEP:-2}" n=1 out
-	while [ "$n" -le "$tries" ]; do # so retry instead of failing outright
-		out=$(curl -sL -f --compressed --max-time "$mt" "$url" 2>/dev/null)
-		if [ -n "$out" ]; then printf '%s' "$out"; return 0; fi
+fetch_why() { # $1 curl-rc $2 http-code -> short human reason (no quotes)
+	case "$1" in
+		0) echo "empty response" ;;
+		6) echo "DNS lookup failed" ;;
+		7) echo "connection failed" ;;
+		22) [ -n "$2" ] && echo "HTTP $2" || echo "HTTP error" ;;
+		28) echo "timed out" ;;
+		35|51|53|54|58|59|60|64|66|77|80|82|83|90|91)
+			echo "TLS error (certificate not trusted; if the router just started, wait for time sync and retry)" ;;
+		*) echo "network error (curl $1)" ;;
+	esac
+}
+tw_log() { # $1 message -> syslog (quiet when logger is missing)
+	command -v logger >/dev/null 2>&1 || return 0
+	logger -t tw-sub-import "$1" 2>/dev/null
+}
+fw_epoch() { # image build time: the clock reads this until NTP steps it
+	[ -n "$TW_FW_EPOCH" ] && { printf '%s' "$TW_FW_EPOCH"; return 0; }
+	# NOTE: busybox date -r reads a FILE's mtime (BSD date -r does not,
+	# which conveniently fails here and disables the gate off-device).
+	date -r /rom/etc/openwrt_release +%s 2>/dev/null \
+		|| date -r /etc/openwrt_release +%s 2>/dev/null \
+		|| return 1
+}
+tls_unsynced_likely() { # clock still within an hour past the build?
+	local fw now
+	fw=$(fw_epoch) || return 1
+	case "$fw" in ''|*[!0-9]*) return 1 ;; esac
+	now=$(date +%s)
+	[ "$now" -ge "$fw" ] 2>/dev/null \
+		&& [ "$now" -lt "$((fw + 3600))" ] 2>/dev/null
+}
+tw_fetch_log() { # $1 url $2 attempt $3 tries $4 curl-rc $5 http-code
+	command -v logger >/dev/null 2>&1 || return 0 # $6 why $7 t $8 ip
+	local host err
+	host=$(printf '%s' "$1" | sed 's|^[a-zA-Z][a-zA-Z0-9+.-]*://||; s|/.*||; s|^.*@||')
+	err=$(tr '\n' ' ' <"$TMP/curl.err" 2>/dev/null | cut -c1-120)
+	logger -t tw-sub-import "fetch $2/$3 $host failed: curl rc=$4 http=${5:-?}${7:+ t=$7}${8:+ ip=$8} ($6)${err:+ $err}" 2>/dev/null
+}
+tw_fetch_once() { # $1 url $2 max-time: one attempt; sets FETCH_OUT/RC/
+	: >"$TMP/curl.err" # CODE/TIMING (globals: same shell as the caller).
+	# NOTE: the URL stays the last argument (tests stub curl that way).
+	# The -w marker reports the HTTP status + phase timing even when -f
+	# suppresses the body; it is stripped below so it never pollutes
+	# the text.
+	FETCH_OUT=$(curl -sSL -f --compressed --connect-timeout 10 \
+		--max-time "$2" \
+		-w '\nTW_FETCH:%{http_code}:%{time_namelookup}:%{time_connect}:%{time_appconnect}:%{time_total}|%{remote_ip}' \
+		"$1" 2>"$TMP/curl.err")
+	FETCH_RC=$?
+	# NOTE: remote_ip is split on '|' because IPv6 addresses contain
+	# colons; the strip below drops any TW_FETCH: line (subscription
+	# bodies are links/base64, never that).
+	FETCH_STATS=$(printf '%s' "$FETCH_OUT" | sed -n 's/^TW_FETCH://p')
+	FETCH_IP=${FETCH_STATS#*|}; [ "$FETCH_IP" = "$FETCH_STATS" ] && FETCH_IP=""
+	FETCH_STATS=${FETCH_STATS%%|*}
+	FETCH_CODE=${FETCH_STATS%%:*}
+	case "$FETCH_CODE" in ''|*[!0-9]*) FETCH_CODE="" ;; esac
+	FETCH_TIMING=${FETCH_STATS#*:}
+	[ "$FETCH_TIMING" = "$FETCH_STATS" ] && FETCH_TIMING=""
+	FETCH_TIMING=$(printf '%s' "$FETCH_TIMING" | tr ':' '/')
+	FETCH_OUT=$(printf '%s' "$FETCH_OUT" | sed '/^TW_FETCH:/d')
+}
+tw_fetch_tls_wait() { # $1 url $2 max-time: cert failed on a fresh-boot
+	local url="$1" mt="$2" end n=0 # clock? kick ntpd, await sync (bounded).
+	local wait_s="${TW_NTP_WAIT:-90}"
+	case "$wait_s" in ''|*[!0-9]*) wait_s=90 ;; esac
+	tls_unsynced_likely || return 1
+	tw_log "TLS verify failed on a fresh-boot clock; kicking ntpd, waiting up to ${wait_s}s for time sync"
+	[ -x /etc/init.d/sysntpd ] && /etc/init.d/sysntpd restart >/dev/null 2>&1
+	end=$(($(date +%s) + wait_s))
+	while [ "$(date +%s)" -lt "$end" ]; do
+		sleep 3
+		n=$((n + 1))
+		tw_fetch_once "$url" "$mt"
+		# TLS passing means the clock is fine: whatever now fails (empty
+		# body, HTTP error, …) is genuine, so stop waiting either way.
+		[ "$FETCH_RC" -eq 60 ] || [ "$FETCH_RC" -eq 51 ] || break
+		TW_FETCH_WHY=$(fetch_why "$FETCH_RC" "$FETCH_CODE")
+		tw_fetch_log "$url" "wait$n" "${wait_s}s" "$FETCH_RC" \
+			"$FETCH_CODE" "$TW_FETCH_WHY" "$FETCH_TIMING" "$FETCH_IP"
+	done
+	if [ "$FETCH_RC" -eq 0 ] && [ -n "$FETCH_OUT" ]; then
+		tw_log "time sync arrived during NTP wait; fetch recovered"
+		printf '%s' "$FETCH_OUT"; return 0
+	fi
+	TW_FETCH_WHY=$(fetch_why "$FETCH_RC" "$FETCH_CODE")
+	case "$FETCH_RC" in
+		60|51) ;; # last probe already logged this above
+		*) tw_fetch_log "$url" "wait$n" "${wait_s}s" "$FETCH_RC" \
+			"$FETCH_CODE" "$TW_FETCH_WHY" "$FETCH_TIMING" "$FETCH_IP" ;;
+	esac
+	return 1
+}
+tw_fetch() { # $1 url $2 max-time -> body on stdout; one attempt unless
+	local url="$1" mt="$2" tries="${TW_FETCH_RETRIES:-1}"
+	local sleep_s="${TW_FETCH_SLEEP:-2}" n=1
+	case "$tries" in ''|*[!0-9]*) tries=1 ;; esac
+	TW_FETCH_WHY="network error"
+	while [ "$n" -le "$tries" ]; do # TW_FETCH_RETRIES says otherwise
+		tw_fetch_once "$url" "$mt"
+		if [ "$FETCH_RC" -eq 0 ] && [ -n "$FETCH_OUT" ]; then
+			printf '%s' "$FETCH_OUT"; return 0
+		fi
+		TW_FETCH_WHY=$(fetch_why "$FETCH_RC" "$FETCH_CODE")
+		tw_fetch_log "$url" "$n" "$tries" "$FETCH_RC" \
+			"$FETCH_CODE" "$TW_FETCH_WHY" "$FETCH_TIMING" "$FETCH_IP"
 		n=$((n + 1))
 		[ "$n" -le "$tries" ] && sleep "$sleep_s"
 	done
+	# Cert verify failure on a fresh-boot clock is the pre-NTP trap, not a
+	# bad cert: wait it out (bounded, logged) instead of failing outright.
+	case "$FETCH_RC" in
+		60|51) tw_fetch_tls_wait "$url" "$mt" && return 0 ;;
+	esac
+	# NOTE: callers capture stdout, so this function runs in a subshell and
+	# TW_FETCH_WHY would not survive; the file carries it to the parent.
+	printf '%s' "$TW_FETCH_WHY" >"$TMP/fetch-why"
 	return 1
+}
+fetch_why_last() { # reason recorded by the last failed fetch (any phase)
+	cat "$TMP/fetch-why" 2>/dev/null || echo "network error"
 }
 qparam() { # $1 query, $2 key
 	printf '&%s' "$1" | sed -n "s/.*[?&]$2=\\([^&]*\\).*/\\1/p" | urldecode
@@ -60,6 +190,45 @@ split_link() { # $1 link -> sets LINK_BODY + LINK_TAG (globals, no subshell)
 		*#*) LINK_TAG=$(printf '%s' "${rest#*#}" | urldecode); rest=${rest%%#*} ;;
 	esac
 	LINK_BODY="$rest"
+}
+valid_port() {
+	case "$1" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
+}
+split_authority() { # $1 [userinfo@]host:port[/path] -> AUTH_* globals
+	local authority hostport
+	authority=${1%%/*}
+	AUTH_USERINFO=""
+	case "$authority" in
+		*@*) AUTH_USERINFO=${authority%@*}; hostport=${authority##*@} ;;
+		*) hostport=$authority ;;
+	esac
+	case "$hostport" in
+		\[*\]:*) AUTH_SERVER=${hostport%%\]*}; AUTH_SERVER=${AUTH_SERVER#\[}
+			AUTH_PORT=${hostport#*\]:} ;;
+		*:*) AUTH_SERVER=${hostport%:*}; AUTH_PORT=${hostport##*:} ;;
+		*) AUTH_SERVER=$hostport; AUTH_PORT="" ;;
+	esac
+}
+is_true() { case "$1" in 1|true|TRUE|yes|YES) return 0 ;; *) return 1 ;; esac; }
+json_csv_array() { # comma-separated strings -> JSON array
+	local oldifs="$IFS" item first=1
+	IFS=,
+	printf '['
+	for item in $1; do
+		[ -n "$item" ] || continue
+		[ "$first" = 1 ] || printf ','
+		printf '"%s"' "$(jesc "$item")"
+		first=0
+	done
+	printf ']'
+	IFS="$oldifs"
+}
+emit_tls() { # $1 server name $2 insecure flag $3 comma-separated ALPN
+	printf ',"tls":{"enabled":true,"server_name":"%s"' "$(jesc "$1")"
+	is_true "$2" && printf ',"insecure":true'
+	[ -n "$3" ] && printf ',"alpn":%s' "$(json_csv_array "$3")"
+	printf '}'
 }
 
 emit_vmess() { # $1 body(base64 json) $2 tag $3 idx
@@ -159,19 +328,131 @@ emit_ss() { # $1 [base64|method:pass]@host:port... $2 tag $3 idx
 	echo "$2" >>"$TMP/tags"
 }
 
+emit_naive() { # $1 user:pass@host:port?query $2 tag $3 idx
+	local uh query up user pass server port sni insecure
+	uh=${1%%\?*}; query=""; case "$1" in *\?*) query=${1#*\?};; esac
+	up=${uh%%@*}; uh=${uh#*@}; server=${uh%%:*}; port=${uh##*:}
+	user=${up%%:*}; pass=${up#*:}
+	user=$(printf '%s' "$user" | urldecode)
+	pass=$(printf '%s' "$pass" | urldecode)
+	[ -z "$user" ] || [ -z "$server" ] && return 1
+	: "${port:=443}"
+	sni=$(qparam "$query" sni); insecure=$(qparam "$query" insecure)
+	{
+		printf '{"type":"naive","tag":"%s","server":"%s","server_port":%s,"username":"%s","password":"%s","domain_resolver":"local-dns","tls":{"enabled":true,"server_name":"%s"' \
+			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$user")" "$(jesc "$pass")" \
+			"$(jesc "${sni:-$server}")"
+		case "$insecure" in 1|true|TRUE) printf ',"insecure":true' ;; esac
+		printf '}}'
+	} >"$TMP/obs-$3.json"
+	echo "$2" >>"$TMP/tags"
+}
+
+emit_hysteria2() { # $1 password@host:port?query $2 tag $3 idx
+	local uh query password server port sni insecure alpn obfs obfs_pass up down
+	uh=${1%%\?*}; query=""; case "$1" in *\?*) query=${1#*\?};; esac
+	split_authority "$uh"
+	password=$(printf '%s' "$AUTH_USERINFO" | urldecode)
+	server=$AUTH_SERVER; port=${AUTH_PORT:-443}
+	[ -n "$password" ] && [ -n "$server" ] && valid_port "$port" || return 1
+	sni=$(qparam "$query" sni); [ -n "$sni" ] || sni=$(qparam "$query" peer)
+	insecure=$(qparam "$query" insecure)
+	[ -n "$insecure" ] || insecure=$(qparam "$query" allow_insecure)
+	alpn=$(qparam "$query" alpn)
+	obfs=$(qparam "$query" obfs)
+	obfs_pass=$(qparam "$query" obfs-password)
+	[ -n "$obfs_pass" ] || obfs_pass=$(qparam "$query" obfs_password)
+	up=$(qparam "$query" upmbps); [ -n "$up" ] || up=$(qparam "$query" up)
+	down=$(qparam "$query" downmbps); [ -n "$down" ] || down=$(qparam "$query" down)
+	# links often spell the rate "100 Mbps"; sing-box wants a bare integer
+	up=$(printf '%s' "$up" | tr -d ' ' | sed 's/[Mm][Bb][Pp][Ss]$//')
+	down=$(printf '%s' "$down" | tr -d ' ' | sed 's/[Mm][Bb][Pp][Ss]$//')
+	{
+		printf '{"type":"hysteria2","tag":"%s","server":"%s","server_port":%s,"password":"%s","domain_resolver":"local-dns"' \
+			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$password")"
+		case "$up" in ''|*[!0-9]*) ;; *) printf ',"up_mbps":%s' "$up" ;; esac
+		case "$down" in ''|*[!0-9]*) ;; *) printf ',"down_mbps":%s' "$down" ;; esac
+		# salamander is the only obfs sing-box knows; anything else would
+		# fail the config check and sink every other endpoint with it
+		[ "$obfs" = "salamander" ] && [ -n "$obfs_pass" ] && \
+			printf ',"obfs":{"type":"salamander","password":"%s"}' "$(jesc "$obfs_pass")"
+		emit_tls "${sni:-$server}" "$insecure" "$alpn"
+		printf '}'
+	} >"$TMP/obs-$3.json"
+	echo "$2" >>"$TMP/tags"
+}
+
+emit_tuic() { # $1 uuid:password@host:port?query $2 tag $3 idx
+	local uh query uuid password server port sni insecure alpn cc udp zrtt
+	uh=${1%%\?*}; query=""; case "$1" in *\?*) query=${1#*\?};; esac
+	split_authority "$uh"
+	case "$AUTH_USERINFO" in *:*) ;; *) return 1 ;; esac
+	uuid=$(printf '%s' "${AUTH_USERINFO%%:*}" | urldecode)
+	password=$(printf '%s' "${AUTH_USERINFO#*:}" | urldecode)
+	server=$AUTH_SERVER; port=${AUTH_PORT:-443}
+	[ -n "$uuid" ] && [ -n "$password" ] && [ -n "$server" ] \
+		&& valid_port "$port" || return 1
+	sni=$(qparam "$query" sni); [ -n "$sni" ] || sni=$(qparam "$query" peer)
+	insecure=$(qparam "$query" allow_insecure)
+	[ -n "$insecure" ] || insecure=$(qparam "$query" insecure)
+	alpn=$(qparam "$query" alpn)
+	cc=$(qparam "$query" congestion_control)
+	[ -n "$cc" ] || cc=$(qparam "$query" cc)
+	udp=$(qparam "$query" udp_relay_mode)
+	zrtt=$(qparam "$query" zero_rtt_handshake)
+	{
+		printf '{"type":"tuic","tag":"%s","server":"%s","server_port":%s,"uuid":"%s","password":"%s","domain_resolver":"local-dns"' \
+			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$uuid")" "$(jesc "$password")"
+		case "$cc" in cubic|new_reno|bbr) printf ',"congestion_control":"%s"' "$cc" ;; esac
+		case "$udp" in native|quic) printf ',"udp_relay_mode":"%s"' "$udp" ;; esac
+		is_true "$zrtt" && printf ',"zero_rtt_handshake":true'
+		emit_tls "${sni:-$server}" "$insecure" "$alpn"
+		printf '}'
+	} >"$TMP/obs-$3.json"
+	echo "$2" >>"$TMP/tags"
+}
+
+emit_anytls() { # $1 password@host:port?query $2 tag $3 idx
+	local uh query password server port sni insecure alpn idle_check idle_timeout min_idle metadata
+	uh=${1%%\?*}; query=""; case "$1" in *\?*) query=${1#*\?};; esac
+	split_authority "$uh"
+	password=$(printf '%s' "$AUTH_USERINFO" | urldecode)
+	server=$AUTH_SERVER; port=${AUTH_PORT:-443}
+	[ -n "$password" ] && [ -n "$server" ] && valid_port "$port" || return 1
+	sni=$(qparam "$query" sni); [ -n "$sni" ] || sni=$(qparam "$query" peer)
+	insecure=$(qparam "$query" insecure)
+	[ -n "$insecure" ] || insecure=$(qparam "$query" allow_insecure)
+	alpn=$(qparam "$query" alpn)
+	idle_check=$(qparam "$query" idle_session_check_interval)
+	idle_timeout=$(qparam "$query" idle_session_timeout)
+	min_idle=$(qparam "$query" min_idle_session)
+	metadata=$(qparam "$query" client_metadata)
+	{
+		printf '{"type":"anytls","tag":"%s","server":"%s","server_port":%s,"password":"%s","domain_resolver":"local-dns"' \
+			"$(jesc "$2")" "$(jesc "$server")" "$port" "$(jesc "$password")"
+		[ -n "$idle_check" ] && printf ',"idle_session_check_interval":"%s"' "$(jesc "$idle_check")"
+		[ -n "$idle_timeout" ] && printf ',"idle_session_timeout":"%s"' "$(jesc "$idle_timeout")"
+		case "$min_idle" in ''|*[!0-9]*) ;; *) printf ',"min_idle_session":%s' "$min_idle" ;; esac
+		[ -n "$metadata" ] && printf ',"client_metadata":"%s"' "$(jesc "$metadata")"
+		emit_tls "${sni:-$server}" "$insecure" "$alpn"
+		printf '}'
+	} >"$TMP/obs-$3.json"
+	echo "$2" >>"$TMP/tags"
+}
+
 # Explain an empty result by sniffing what the server actually sent.
 diag_fail() {
-	local preview bad
+	local preview bad mal hint
 	preview=$(printf '%s' "$TEXT0" | tr '\n' ' ' \
 		| tr -cd 'A-Za-z0-9:;.,/+?=&%#@_() -' | cut -c1-80)
 	case "$TEXT0" in
 		{*|\[*)
-			echo '{"error":"this looks like a JSON subscription, which is not supported (need v2ray-style links: vmess/vless/trojan/ss)"}'
+			echo '{"error":"this looks like a JSON subscription, which is not supported (need v2ray-style links: vmess/vless/trojan/ss/naive/hysteria2/tuic/anytls)"}'
 			exit 1 ;;
 	esac
 	case "$TEXT0" in
 		*"proxies:"*|*"proxy-groups:"*|*"mixed-port:"*|*"socks-port:"*)
-			echo '{"error":"this looks like a Clash config, which is not supported (need v2ray-style links: vmess/vless/trojan/ss)"}'
+			echo '{"error":"this looks like a Clash config, which is not supported (need v2ray-style links: vmess/vless/trojan/ss/naive/hysteria2/tuic/anytls)"}'
 			exit 1 ;;
 	esac
 	case "$TEXT0" in
@@ -179,20 +460,49 @@ diag_fail() {
 			echo '{"error":"the server returned a web page, not a subscription (check the URL and any access key)"}'
 			exit 1 ;;
 	esac
+	# Secondary clues, appended to the nested-fetch errors below: a body
+	# mixing an unreachable nested URL with unsupported or malformed links
+	# otherwise reports only the network part, hiding what else was seen.
+	# NOTE: http/https lines are nested subscriptions, not proxy protocols,
+	# so they are left out of the "unsupported" list (every nested failure
+	# would otherwise blame "https").
+	bad=$(grep -v '^https\?$' "$TMP/unknown" 2>/dev/null | sort -u | join_csv)
+	hint=""
+	if [ -n "$bad" ]; then
+		hint="$hint; also saw unsupported types: $bad"
+	fi
+	if [ -s "$TMP/malformed" ]; then
+		mal=$(sort "$TMP/malformed" | uniq -c | sort -rn \
+			| awk '{ printf "%s%s x%s", sep, $2, $1; sep=", " }')
+		hint="$hint; also saw malformed $mal link(s)"
+	fi
 	if [ "$FETCHED" -gt 0 ]; then
-		printf '{"error":"followed %s nested subscription link(s), found no supported servers"}\n' "$FETCHED"
+		printf '{"error":"followed %s nested subscription link(s), found no supported servers%s"}\n' \
+			"$FETCHED" "$hint"
 		exit 1
 	fi
 	if [ "$ATTEMPTED" -gt 0 ]; then
-		printf '{"error":"found %s nested subscription link(s) but none could be fetched (network error); try again"}\n' "$ATTEMPTED"
+		printf '{"error":"found %s nested subscription link(s) but none could be fetched (%s); try again%s"}\n' \
+			"$ATTEMPTED" "$(fetch_why_last)" "$hint"
 		exit 1
 	fi
-	if [ -s "$TMP/unknown" ]; then
-		bad=$(sort -u "$TMP/unknown" | join_csv)
+	if [ -s "$TMP/malformed" ]; then
+		mal=$(sort "$TMP/malformed" | uniq -c | sort -rn \
+			| awk '{ printf "%s%s x%s", sep, $2, $1; sep=", " }')
+		if [ -n "$bad" ]; then
+			printf '{"error":"no usable links (malformed: %s; unsupported types: %s)"}\n' \
+				"$mal" "$bad"
+		else
+			printf '{"error":"no usable links (malformed %s link(s): missing server or credentials?)"}\n' \
+				"$mal"
+		fi
+		exit 1
+	fi
+	if [ -n "$bad" ]; then
 		printf '{"error":"no supported links (found only unsupported types: %s)"}\n' "$bad"
 		exit 1
 	fi
-	printf '{"error":"no supported proxy links found (vmess/vless/trojan/ss); got %s bytes starting with: %s"}\n' \
+	printf '{"error":"no supported proxy links found (vmess/vless/trojan/ss/naive/hysteria2/tuic/anytls); got %s bytes starting with: %s"}\n' \
 		"${#TEXT0}" "$preview"
 	exit 1
 }
@@ -231,11 +541,33 @@ process_text() { # parse global TEXT, appending outbounds/tags; queues sub-URLs
 			n=$((n + 1)); tag="$base-$n"
 		done
 		ok=0
+		# A supported scheme that fails to parse is malformed input, not an
+		# unknown protocol: record it so the empty-result diagnostic can say
+		# so instead of puzzling over "unsupported types".
+		fail_supported() { idx=$((idx - 1)); echo "$1" >>"$TMP/malformed"; }
 		case "$scheme" in
-		vmess) emit_vmess "$body" "$tag" "$idx" && ok=1 || idx=$((idx - 1)) ;;
-		vless) emit_vless "$body" "$tag" "$idx" && ok=1 || idx=$((idx - 1)) ;;
-		trojan) emit_trojan "$body" "$tag" "$idx" && ok=1 || idx=$((idx - 1)) ;;
-		ss|shadowsocks) emit_ss "$body" "$tag" "$idx" && ok=1 || idx=$((idx - 1)) ;;
+		vmess) emit_vmess "$body" "$tag" "$idx" && ok=1 || fail_supported vmess ;;
+		vless) emit_vless "$body" "$tag" "$idx" && ok=1 || fail_supported vless ;;
+		trojan) emit_trojan "$body" "$tag" "$idx" && ok=1 || fail_supported trojan ;;
+		ss|shadowsocks) emit_ss "$body" "$tag" "$idx" && ok=1 || fail_supported ss ;;
+		naive+https|naive)
+			if outbound_supported naive; then
+				emit_naive "$body" "$tag" "$idx" && ok=1 || fail_supported naive
+			else
+				idx=$((idx - 1))
+				echo "$scheme" >>"$TMP/unknown"
+				echo "$scheme" >>"$TMP/unavail"
+			fi ;;
+		hysteria2|hy2) emit_hysteria2 "$body" "$tag" "$idx" && ok=1 || fail_supported hysteria2 ;;
+		tuic) emit_tuic "$body" "$tag" "$idx" && ok=1 || fail_supported tuic ;;
+		anytls)
+			if outbound_supported anytls; then
+				emit_anytls "$body" "$tag" "$idx" && ok=1 || fail_supported anytls
+			else
+				idx=$((idx - 1))
+				echo "$scheme" >>"$TMP/unknown"
+				echo "$scheme" >>"$TMP/unavail"
+			fi ;;
 		http|https)
 				idx=$((idx - 1))
 				echo "$scheme" >>"$TMP/unknown"
@@ -247,19 +579,59 @@ process_text() { # parse global TEXT, appending outbounds/tags; queues sub-URLs
 	done <"$TMP/lines"
 }
 
+# Whether the installed sing-box can run outbound type $1 (naive|anytls),
+# probed lazily on the first such link and cached for the run. Answers "no"
+# only on positive proof (build-tag or unknown-type complaint); anything
+# else — pass, missing binary, odd error — keeps the type, with the
+# full-config check below as arbiter.
+outbound_supported() {
+	local t="$1" ob
+	[ -e "$TMP/$t-probed" ] && { [ -e "$TMP/$t-ok" ]; return; }
+	: >"$TMP/$t-probed"
+	command -v "${TW_SINGBOX_BIN:-sing-box}" >/dev/null 2>&1 \
+		|| { : >"$TMP/$t-ok"; return 0; }
+	case "$t" in
+		naive) ob='"username":"u","password":"p"' ;;
+		*) ob='"password":"p"' ;;
+	esac
+	printf '{"log":{"level":"fatal"},"outbounds":[{"type":"%s","tag":"probe","server":"127.0.0.1","server_port":443,%s,"tls":{"enabled":true}}]}' \
+		"$t" "$ob" >"$TMP/$t-probe.json"
+	if "${TW_SINGBOX_BIN:-sing-box}" check -c "$TMP/$t-probe.json" 2>&1 \
+		| grep -qi 'not included in this build\|unknown outbound type'; then
+		return 1
+	fi
+	: >"$TMP/$t-ok"
+	return 0
+}
+
 # --- collect + process (follows nested subscription URLs, depth-limited) --
 : >"$TMP/tags"; : >"$TMP/unknown"; : >"$TMP/subqueue"; : >"$TMP/seen"
-: >"$TMP/seenlines"; : >"$TMP/alltext"; : >"$TMP/map"
+: >"$TMP/seenlines"; : >"$TMP/alltext"; : >"$TMP/map"; : >"$TMP/malformed"
+: >"$TMP/unavail"
 idx=0; FETCHED=0; ATTEMPTED=0
 RAW=""
 case "$INPUT" in
 	-) RAW=$(cat) ;;
 	http://*|https://*)
-		RAW=$(tw_fetch "$INPUT" 20) \
-			|| { echo '{"error":"subscription fetch failed (unreachable or HTTP error)"}'; exit 1; }
+		RAW=$(tw_fetch "$INPUT" 15) \
+			|| { printf '{"error":"subscription fetch failed (%s)"}\n' "$(fetch_why_last)"; exit 1; }
 		echo "$INPUT" >>"$TMP/seen"
 		;;
 	*) RAW="$INPUT" ;;
+esac
+# Pasted input can carry edge whitespace; strip it so a lone URL still
+# matches the direct-fetch case below (link parsing trims per line anyway).
+RAW=$(printf '%s' "$RAW" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+# A lone subscription URL on stdin (how the UI submits it) fetches directly
+# like the URL argument: parsing it as a nested link would misreport "https"
+# as a skipped scheme and detour through the retry loop.
+case "$RAW" in
+	http://*|https://*)
+		if [ "$(printf '%s' "$RAW" | wc -l)" -eq 0 ] \
+		&& printf '%s' "$RAW" | grep -q '^https\?://[^[:space:]]*$'; then
+			RAW=$(tw_fetch "$RAW" 15) \
+				|| { printf '{"error":"subscription fetch failed (%s)"}\n' "$(fetch_why_last)"; exit 1; }
+		fi ;;
 esac
 decode_text
 TEXT0="$TEXT"
@@ -317,13 +689,16 @@ fi
 # kill switch.
 # NOTE: port 53 is hijacked into sing-box's DNS module, which resolves over
 # TCP detoured through the proxy — vault DNS keeps working even where raw
-# UDP is filtered. Each proxy outbound sets domain_resolver to the system
-# resolver: without it, an endpoint whose server is a domain name can never
-# resolve (DNS needs the proxy, the proxy needs DNS), killing the tunnel.
+# UDP is filtered. ICMP is dropped silently first: some proxy outbounds
+# (hysteria2) cannot carry it, and without the rule every ping (phones
+# probe Apple continuously) logs an error each. Each proxy outbound sets
+# domain_resolver to the system resolver: without it, an endpoint whose
+# server is a domain name can never resolve (DNS needs the proxy, the
+# proxy needs DNS), killing the tunnel.
 : "${TW_DNS_SERVER:=1.1.1.1}"
 case "$TW_DNS_SERVER" in ''|*[!0-9.]*|.*|*.|*..*) TW_DNS_SERVER=1.1.1.1 ;; esac
 {
-	printf '{"log":{"level":"warn"},"inbounds":[%s],"dns":{"servers":[{"tag":"proxy-dns","type":"tcp","server":"%s","detour":"proxy"},{"tag":"local-dns","type":"local"}],"final":"proxy-dns"},"outbounds":[%s{"type":"block","tag":"block"},{"type":"selector","tag":"proxy","outbounds":[%s],"default":"%s"}],"route":{"rules":[%s{"port":53,"action":"hijack-dns"}],"final":"proxy","auto_detect_interface":true}}' \
+	printf '{"log":{"level":"warn"},"inbounds":[%s],"dns":{"servers":[{"tag":"proxy-dns","type":"tcp","server":"%s","detour":"proxy"},{"tag":"local-dns","type":"local"}],"final":"proxy-dns"},"outbounds":[%s{"type":"block","tag":"block"},{"type":"selector","tag":"proxy","outbounds":[%s],"default":"%s"}],"route":{"rules":[{"network":"icmp","action":"reject","method":"drop"},%s{"port":53,"action":"hijack-dns"}],"final":"proxy","auto_detect_interface":true}}' \
 		"$INBOUND_JSON" "$TW_DNS_SERVER" "$OUTBOUND_FRAGS" "$SELECT_LIST" "$(jesc "$DEFAULT_TAG")" \
 		"$PROBE_RULE"
 } >"$TMP/config.json"
@@ -353,6 +728,22 @@ esac
 publish "$TMP/config.json" "$OUT" \
 	|| { rm -f "$OUT.new.$$"; echo '{"error":"could not write the config file"}'; exit 1; }
 
+# What didn't make it, for the success summary (one line per scheme):
+# unknown protocols plus anything the installed build can't run.
+build_skipped() {
+	: >"$TMP/skipped"
+	[ -s "$TMP/unknown" ] || return 0
+	for s in $(sort -u "$TMP/unknown" | grep -v '[[:space:]]'); do
+		n=$(grep -cxF "$s" "$TMP/unknown")
+		if grep -qxF "$s" "$TMP/unavail" 2>/dev/null; then
+			printf '%s x%s (not in this sing-box build)\n' "$s" "$n" >>"$TMP/skipped"
+		else
+			printf '%s x%s\n' "$s" "$n" >>"$TMP/skipped"
+		fi
+	done
+}
+build_skipped
+
 if [ -z "$NO_JSHN" ]; then
 json_init
 json_add_int count "$idx"
@@ -361,10 +752,20 @@ while IFS= read -r t; do json_add_string "" "$t"; done <"$TMP/tags"
 json_close_array
 json_add_string config "$OUT"
 [ "$CHECKED" = "true" ] && json_add_boolean checked 1 || json_add_boolean checked 0
+if [ -s "$TMP/skipped" ]; then
+	json_add_array skipped
+	while IFS= read -r t; do json_add_string "" "$t"; done <"$TMP/skipped"
+	json_close_array
+fi
 json_dump
 else # off-target (no libubox): same summary, hand-rolled
 	if [ "$CHECKED" = "true" ]; then CHECKED_JSON=true; else CHECKED_JSON=false; fi
-	printf '{"count":%d,"tags":[%s],"config":"%s","checked":%s}\n' "$idx" \
+	SKIPPED_JSON=""
+	if [ -s "$TMP/skipped" ]; then
+		SKIPPED_JSON=$(printf ',"skipped":[%s]' \
+			"$(sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/"&"/' "$TMP/skipped" | join_csv)")
+	fi
+	printf '{"count":%d,"tags":[%s],"config":"%s","checked":%s%s}\n' "$idx" \
 		"$(sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/"&"/' "$TMP/tags" | join_csv)" \
-		"$(jesc "$OUT")" "$CHECKED_JSON"
+		"$(jesc "$OUT")" "$CHECKED_JSON" "$SKIPPED_JSON"
 fi

@@ -125,7 +125,12 @@ portal_remove_probes() {
 portal_write_probes() {
 	local ip="$1" url f tmp
 	[ -n "$ip" ] || return 0
-	url="http://$ip/cgi-bin/luci/admin/travelwizard"
+	# NOTE: the #cna marker tells the wizard it runs inside an OS captive
+	# sheet (not a real browser tab). Once online it shows the way back
+	# (secure.router) and then navigates the sheet to the OS probe URL:
+	# that navigation is what makes the OS re-verify internet access and
+	# offer Done. Plain URL loads are never affected.
+	url="http://$ip/cgi-bin/luci/admin/travelwizard#cna"
 	tmp=$(mktemp -d) || return 0
 	cat >"$tmp/probe" <<EOF
 <!DOCTYPE html>

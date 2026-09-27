@@ -382,6 +382,33 @@ tw_tunnel_routed() {
 		END { exit !found }'
 }
 
+# Re-assert a TUN device's IPv4 address (idempotent) and verify one is
+# present. netifd flushes addresses it does not own when it reconfigures
+# the interface, which silently stalls the vault: masquerade then falls
+# back to a LAN IP and nothing flows until the next connect. True when
+# the device has a global IPv4 address afterwards.
+tw_tun_addr_ensure() {
+	local dev="${1:-tun0}" addr="${2:-172.19.0.1/30}"
+	ip addr add "$addr" dev "$dev" 2>/dev/null
+	ip -o -4 addr show "$dev" scope global 2>/dev/null | grep -q .
+}
+
+# Print the dotted netmask for a prefix length (0-32). Fails on garbage.
+plen2mask() {
+	local p="$1" o n b m=""
+	case "$p" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$p" -gt 32 ] 2>/dev/null && return 1
+	o=1
+	while [ "$o" -le 4 ]; do
+		n=$((p - (o - 1) * 8))
+		[ "$n" -gt 8 ] && n=8; [ "$n" -lt 0 ] && n=0
+		b=0; [ "$n" -gt 0 ] && b=$(( (255 << (8 - n)) & 255 ))
+		m="$m${m:+.}$b"
+		o=$((o + 1))
+	done
+	printf '%s' "$m"
+}
+
 # Print the l3 device of an interface, e.g. "phy0-ap0" / "eth1".
 tw_l3dev() {
 	ubus call "network.interface.$1" status 2>/dev/null \

@@ -3,8 +3,8 @@
 # Hotel Wi-Fi often sits on 192.168.x.x, which breaks routing when it matches
 # our own LAN. Prints JSON describing what changed.
 # Usage: tw-subnet-fix
-. /usr/share/libubox/jshn.sh
-. /usr/lib/travelwizard/common.sh
+. "${TW_JSHN:-/usr/share/libubox/jshn.sh}"
+. "${TW_COMMON:-/usr/lib/travelwizard/common.sh}"
 
 UPSTREAM=$(tw_upstream)
 [ -z "$UPSTREAM" ] && { echo '{"changed":false,"reason":"no upstream link"}'; exit 0; }
@@ -14,20 +14,22 @@ set -- $(tw_ipv4 "$UPSTREAM")
 WAN_IP="$1"; WAN_MASK="$2"
 [ -z "$WAN_IP" ] && { echo '{"changed":false,"reason":"no upstream IPv4"}'; exit 0; }
 
-# Candidate /24 pools. Avoid the subnets hotels most commonly use
-# (.0, .1, .10, .68, .88, .100) so a second clash is unlikely.
-LAN_POOL="40 51 62 73 84 95 126 137"
-VAULT_POOL="30 31 32"
+# Candidate /24s (router .1 in each). Each list spans several private
+# ranges: a covering upstream supernet (e.g. home Wi-Fi on 10.0.0.0/8, which
+# swallows every 10.x/24) must still leave a free pick. First entries are the
+# defaults, so conflict-free routers never move. 192.168 picks avoid the
+# subnets hotels most commonly use (.0, .1, .10, .68, .88, .100).
+LAN_CANDS="192.168.40.1 192.168.51.1 192.168.62.1 192.168.73.1 192.168.84.1 192.168.95.1 192.168.126.1 192.168.137.1 172.25.40.1 10.200.40.1"
+VAULT_CANDS="10.20.30.1 10.20.31.1 10.20.32.1 172.26.30.1 172.26.31.1 192.168.201.1"
 
 lan_ip=$(uci -q get network.lan.ipaddr); lan_ip=${lan_ip:-192.168.40.1}
 vault_ip=$(uci -q get network.vault.ipaddr); vault_ip=${vault_ip:-10.20.30.1}
 
-pick_free() { # base $1: "192.168" or "10.20", pool $2, other net $3 $4
-	local base octet
-	for octet in $2; do
-		cand="$1.$octet.1"
+pick_free() { # candidates $1, other local net $2 $3
+	local cand
+	for cand in $1; do
 		if nets_overlap "$WAN_IP" "$WAN_MASK" "$cand" 24; then continue; fi
-		if [ -n "$3" ] && nets_overlap "$3" "$4" "$cand" 24; then continue; fi
+		if [ -n "$2" ] && nets_overlap "$2" "$3" "$cand" 24; then continue; fi
 		echo "$cand"
 		return 0
 	done
@@ -38,7 +40,7 @@ CHANGED="false"
 OLD_LAN="$lan_ip"; OLD_VAULT="$vault_ip"
 
 if nets_overlap "$WAN_IP" "$WAN_MASK" "$lan_ip" 24; then
-	NEW_LAN=$(pick_free "192.168" "$LAN_POOL" "$vault_ip" 24) \
+	NEW_LAN=$(pick_free "$LAN_CANDS" "$vault_ip" 24) \
 		|| { echo '{"changed":false,"error":"no free LAN subnet"}'; exit 1; }
 	uci set network.lan.ipaddr="$NEW_LAN"
 	uci set network.lan.netmask='255.255.255.0'
@@ -49,13 +51,45 @@ fi
 
 if nets_overlap "$WAN_IP" "$WAN_MASK" "$vault_ip" 24 \
 	|| nets_overlap "$lan_ip" 24 "$vault_ip" 24; then
-	NEW_VAULT=$(pick_free "10.20" "$VAULT_POOL" "$lan_ip" 24) \
+	NEW_VAULT=$(pick_free "$VAULT_CANDS" "$lan_ip" 24) \
 		|| { echo '{"changed":false,"error":"no free vault subnet"}'; exit 1; }
 	uci set network.vault.ipaddr="$NEW_VAULT"
 	uci set network.vault.netmask='255.255.255.0'
 	uci set travelwizard.main.vault_net="$NEW_VAULT/24"
 	vault_ip="$NEW_VAULT"
 	CHANGED="true"
+fi
+
+# Stable setup name: secure.router always answers on the current LAN
+# address, so the wizard URL survives subnet moves (phones can't be expected
+# to track 192.168.40.1 -> 192.168.51.1). Converged on every run (cheap), so
+# upgrades and hand edits heal on the next uplink change. Coexists with
+# tw-portal's /#/ catch-all in the same list: both sides match entries by
+# value. Earlier builds used router.lan; leftovers are removed below.
+DNS_CHANGED=""
+dnssec=$(uci show dhcp 2>/dev/null \
+	| sed -n 's/^dhcp\.\([^.]*\)=dnsmasq/\1/p' | head -n 1)
+if [ -n "$dnssec" ]; then
+	want_setup="/secure.router/$lan_ip"
+	sec_re=$(printf '%s' "$dnssec" | sed 's/\[/\\[/g; s/\]/\\]/g')
+	addrs=$(uci show dhcp 2>/dev/null \
+		| sed -n "s/^dhcp\.$sec_re\.address=//p" | tr ' ' '\n' | tr -d "'")
+	have_setup=$(printf '%s\n' "$addrs" | grep '^/secure\.router/' || true)
+	if [ "$have_setup" != "$want_setup" ]; then
+		for stale in $have_setup; do
+			uci del_list "dhcp.$dnssec.address=$stale" 2>/dev/null
+		done
+		uci add_list "dhcp.$dnssec.address=$want_setup" 2>/dev/null
+		uci commit dhcp
+		DNS_CHANGED=1
+	fi
+	# One-time migration from the old setup name (idempotent: no match,
+	# nothing to remove, dnsmasq untouched).
+	for stale in $(printf '%s\n' "$addrs" | grep '^/router\.lan/' || true); do
+		uci del_list "dhcp.$dnssec.address=$stale" 2>/dev/null
+		uci commit dhcp
+		DNS_CHANGED=1
+	done
 fi
 
 if [ "$CHANGED" = "true" ]; then
@@ -70,6 +104,9 @@ if [ "$CHANGED" = "true" ]; then
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	/etc/init.d/firewall restart >/dev/null 2>&1
 	[ -n "$PBR_CHANGED" ] && /etc/init.d/pbr restart >/dev/null 2>&1
+elif [ -n "$DNS_CHANGED" ]; then
+	# Setup name (re)pointed without a subnet move: DNS alone is stale.
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 fi
 
 json_init

@@ -108,7 +108,13 @@ function api_wlan_saved()
 	end)
 	table.sort(out, function(a, b) return a.last_used > b.last_used end)
 	http.prepare_content("application/json")
-	http.write_json({ saved = out })
+	-- An empty Lua table encodes as {} rather than []: spell out the
+	-- empty array so clients can rely on the shape.
+	if #out == 0 then
+		http.write('{"saved":[]}')
+	else
+		http.write_json({ saved = out })
+	end
 end
 
 -- One-tap reconnect to a saved network (key looked up server-side).
@@ -294,6 +300,54 @@ local function parse_json(out)
 	return jsonc.parse(out or "")
 end
 
+-- Pull the importer's "skipped" list (endpoints left out as unsupported or
+-- unrunnable by the installed sing-box) out of a successful import summary,
+-- so the UI can report it instead of dropping it silently.
+local function import_skipped(out)
+	if out == nil then return nil end
+	local arr = out:match('"skipped":%s*(%b[])')
+	if arr == nil then return nil end
+	local t = parse_json(arr)
+	if type(t) ~= "table" or #t == 0 then return nil end
+	return t
+end
+
+-- Retarget a proxy profile's selector default without re-importing: a
+-- connect tap only changes which endpoint is used, so re-running the full
+-- importer (which re-fetches nested subscription URLs over hotel Wi-Fi and
+-- can transiently fail) is both slow and wrong — it can even add or drop
+-- endpoints mid-tap. Returns true on success, nil to fall back to a full
+-- re-import (missing config, unexpected shape, or JSON check failed).
+local function switch_default_fast(id, server)
+	local path = singbox_paths(id)
+	if not has_file(path) then return nil end
+	local txt = nixio.fs.readfile(path)
+	if txt == nil or txt:find('"default"%s*:%s*"') == nil then return nil end
+	local esc = server:gsub('\\', '\\\\'):gsub('"', '\\"')
+		:gsub('[\r\n]', ' ')
+	local ntxt, n = txt:gsub('"default"%s*:%s*"[^"]*"',
+		'"default":"' .. esc .. '"', 1)
+	if n ~= 1 then return nil end
+	-- sanity: the rewritten file must still parse with the new default
+	local conf = parse_json(ntxt)
+	if type(conf) ~= "table" then return nil end
+	local found = false
+	if type(conf.outbounds) == "table" then
+		for _, o in ipairs(conf.outbounds) do
+			if type(o) == "table" and o.tag == "proxy"
+				and o.default == server then found = true; break end
+		end
+	end
+	if not found then return nil end
+	local tmp = path .. ".new." .. nixio.getpid()
+	if not nixio.fs.writefile(tmp, ntxt) then return nil end
+	util.exec("chmod 600 %s && mv -f %s %s" % {
+		util.shellquote(tmp), util.shellquote(tmp), util.shellquote(path) })
+	nixio.fs.unlink(tmp)
+	if read_default_server(path) ~= server then return nil end
+	return true
+end
+
 -- One-time: fold the legacy single-config sections into profiles, keeping
 -- the effectively-active setup active. After this, profiles are the only
 -- source of truth (legacy vpn_mode is parked at off).
@@ -422,7 +476,14 @@ function api_profiles()
 		out[#out + 1] = p
 	end)
 	http.prepare_content("application/json")
-	http.write_json({ profiles = out, active = active })
+	-- An empty Lua table encodes as {} rather than [], which is not a
+	-- list: spell out the empty array so clients can rely on the shape.
+	if #out == 0 then
+		local a = (active or ""):gsub('\\', '\\\\'):gsub('"', '\\"')
+		http.write('{"profiles":[],"active":"' .. a .. '"}')
+	else
+		http.write_json({ profiles = out, active = active })
+	end
 end
 
 local function new_profile_id()
@@ -447,6 +508,8 @@ function api_profile_save()
 		uci:revert("travelwizard")
 		http.write(out and #out > 0 and out or fallback)
 	end
+	-- Endpoints the importer left out (unsupported/unrunnable), if any.
+	local skipped = nil
 	if #name < 1 or #name > 64 then
 		http.write('{"error":"name must be 1-64 characters"}')
 		return
@@ -500,13 +563,10 @@ function api_profile_save()
 				fail(out, '{"error":"import failed"}')
 				return
 			end
+			skipped = import_skipped(out)
 			uci:set("travelwizard", id, "config_file", path)
 			uci:set("travelwizard", id, "sub_url", sub)
 		elseif server ~= "" then
-			if not has_file(src) then
-				fail(nil, '{"error":"no subscription saved yet"}')
-				return
-			end
 			local found = false
 			for _, t in ipairs(profile_tags(id)) do
 				if t == server then found = true; break end
@@ -515,10 +575,16 @@ function api_profile_save()
 				fail(nil, '{"error":"unknown server"}')
 				return
 			end
-			local out = run_import(src, path, server)
-			if out == nil or out:find('"error"') ~= nil then
-				fail(out, '{"error":"import failed"}')
-				return
+			if switch_default_fast(id, server) == nil then
+				if not has_file(src) then
+					fail(nil, '{"error":"no subscription saved yet"}')
+					return
+				end
+				local out = run_import(src, path, server)
+				if out == nil or out:find('"error"') ~= nil then
+					fail(out, '{"error":"import failed"}')
+					return
+				end
 			end
 			uci:set("travelwizard", id, "config_file", path)
 		end
@@ -534,12 +600,13 @@ function api_profile_save()
 		local res = parse_json(out)
 		if res ~= nil then
 			res.saved = id
+			if skipped ~= nil then res.skipped = skipped end
 			http.write_json(res)
 		else
 			http.write(out and #out > 0 and out or '{"error":"apply failed"}')
 		end
 	else
-		http.write_json({ saved = id })
+		http.write_json({ saved = id, skipped = skipped })
 	end
 end
 
@@ -605,14 +672,16 @@ function api_profile_server()
 		return
 	end
 	local path, src = singbox_paths(id)
-	if not has_file(src) then
-		http.write('{"error":"no subscription saved yet"}')
-		return
-	end
-	local out = run_import(src, path, server)
-	if out == nil or out:find('"error"') ~= nil then
-		http.write(out and #out > 0 and out or '{"error":"import failed"}')
-		return
+	if switch_default_fast(id, server) == nil then
+		if not has_file(src) then
+			http.write('{"error":"no subscription saved yet"}')
+			return
+		end
+		local out = run_import(src, path, server)
+		if out == nil or out:find('"error"') ~= nil then
+			http.write(out and #out > 0 and out or '{"error":"import failed"}')
+			return
+		end
 	end
 	uci:set("travelwizard", id, "config_file", path)
 	uci:commit("travelwizard")
@@ -669,10 +738,11 @@ function api_profile_refresh()
 		res.refreshed = id
 		res.count = imp.count
 		res.servers = imp.tags
+		res.skipped = imp.skipped
 		http.write_json(res)
 	else
 		http.write_json({ refreshed = id, count = imp.count,
-			servers = imp.tags })
+			servers = imp.tags, skipped = imp.skipped })
 	end
 end
 

@@ -7,6 +7,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="format-detection" content="telephone=no">
+<!-- this page embeds a live session token and must never come from cache,
+     or a stale copy would keep driving the router with outdated code -->
+<meta http-equiv="Cache-Control" content="no-store">
 <title><%:Travel Router%></title>
 <style>
 :root{
@@ -37,6 +40,14 @@ font-weight:800;font-size:13px;box-shadow:0 7px 18px rgba(49,87,213,.24)}
 .tw-intro{margin-bottom:22px}
 .tw-intro h1{font-size:30px;letter-spacing:-.04em;margin:0 0 5px}
 .tw-intro p{margin:0;color:var(--muted)}
+/* how to come back later: always visible, the setup name survives LAN moves */
+.tw-return{display:flex;align-items:center;gap:12px;margin:-8px 0 20px;padding:12px 14px;
+background:var(--brand-t);border:1px solid #cfd8ff;border-radius:13px;color:#34415b}
+.tw-return-icon{width:34px;height:34px;border-radius:10px;background:#fff;color:var(--brand);
+display:grid;place-items:center;font-size:18px;flex:none}
+.tw-return-copy{min-width:0;flex:1}.tw-return-copy strong{display:block;font-size:13px}
+.tw-return-copy span{display:block;font-size:13px;color:#59677d}
+.tw-return a{color:var(--brand);font-weight:800;white-space:nowrap}
 .tw-nav{display:flex;gap:7px;padding:5px;background:#e9edf5;border-radius:14px;margin-bottom:24px;
 overflow-x:auto;scrollbar-width:none}
 .tw-nav::-webkit-scrollbar{display:none}
@@ -201,6 +212,9 @@ justify-content:space-between;gap:12px}
 .tw-sub-chevron{color:var(--muted);transition:transform .15s}
 .tw-sub-group[open] .tw-sub-chevron{transform:rotate(180deg)}
 .tw-sub-body{padding:0 16px 16px;border-top:1px solid var(--line)}
+.tw-saved-away{margin-top:9px}
+.tw-saved-away summary{padding:12px 14px}
+.tw-saved-away .tw-sub-body{padding:12px 14px 14px}
 .tw-sub-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0}
 .tw-latency{display:inline-flex;min-width:67px;justify-content:center;border-radius:99px;padding:4px 9px;
 background:#eef1f5;color:var(--muted);font-size:12px;font-weight:750;white-space:nowrap}
@@ -230,6 +244,22 @@ border-radius:12px;padding:8px}
 .tw-toast{position:fixed;left:50%;bottom:max(1.2em,env(safe-area-inset-bottom));transform:translateX(-50%);
 background:var(--ink);color:#fff;border-radius:14px;padding:.75em 1.3em;max-width:92vw;z-index:50;
 box-shadow:var(--shadow);font-weight:500}
+/* captive-sheet finish overlay + banner (explicit colors: theme-proof) */
+.tw-cna-overlay{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;
+padding:16px;background:rgba(10,18,35,.5)}
+.tw-cna-overlay[hidden],.tw-cna-banner[hidden]{display:none}
+.tw-cna-card{background:#fff;color:#1c2742;border-radius:14px;max-width:430px;width:100%;
+padding:22px 22px 18px;text-align:center;box-shadow:0 18px 60px rgba(0,0,0,.35)}
+.tw-cna-card h2{margin:0 0 8px;font-size:21px}
+.tw-cna-card p{margin:8px 0;color:#1c2742}
+.tw-cna-card .tw-muted{color:#5b6b82}
+.tw-cna-url{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;word-break:break-all;
+background:#eef1f6;border-radius:8px;padding:9px 10px;margin:10px 0}
+.tw-cna-url a{color:#1c4fd6;text-decoration:none}
+.tw-cna-count{font-weight:600}
+.tw-cna-banner{position:fixed;left:50%;transform:translateX(-50%);bottom:max(1.2em,env(safe-area-inset-bottom));
+z-index:55;display:flex;gap:10px;align-items:center;max-width:94vw;background:#14301c;color:#fff;
+border-radius:14px;padding:8px 8px 8px 16px;box-shadow:var(--shadow);font-weight:600;white-space:nowrap}
 @keyframes tw-spin{to{transform:rotate(360deg)}}
 @keyframes tw-enter{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
 @keyframes tw-focus{0%,100%{border-color:var(--line)}
@@ -255,6 +285,7 @@ box-shadow:var(--shadow);font-weight:500}
 		box-shadow:0 12px 38px rgba(20,31,54,.25);backdrop-filter:blur(16px)}
 	.tw-nav button{flex:1;justify-content:center;padding:10px 5px;font-size:11px;gap:5px}
 	.tw-toast{bottom:calc(76px + env(safe-area-inset-bottom))}
+	.tw-cna-banner{bottom:calc(76px + env(safe-area-inset-bottom))}
 	.tw-next{grid-template-columns:auto 1fr;padding:16px;gap:12px}
 	.tw-next-icon{width:44px;height:44px;border-radius:14px}
 	.tw-next .tw-button{grid-column:1/-1;width:100%}
@@ -272,6 +303,7 @@ box-shadow:var(--shadow);font-weight:500}
 	.tw-choice{width:100%}
 	.tw-choice button{flex:1}
 	.tw-section-title h2{font-size:21px}
+	.tw-return{align-items:flex-start;flex-wrap:wrap}.tw-return .tw-button{width:100%}
 }
 @media(prefers-reduced-motion:reduce){
 	.tw-panel.is-entering,.tw-card.tw-focus{animation:none}
@@ -289,6 +321,13 @@ box-shadow:var(--shadow);font-weight:500}
 	<div class="tw-intro">
 		<h1><%:Your travel router%></h1>
 		<p><%:See what is ready, then follow the one next step that matters.%></p>
+	</div>
+	<div class="tw-return">
+		<span class="tw-return-icon" aria-hidden="true">↩</span>
+		<div class="tw-return-copy"><strong><%:Need this page again later?%></strong>
+			<span><%:Connect to%> <b id="return-mgmt"><%:the setup Wi-Fi%></b>, <%:open Safari or Chrome, then enter%>
+				<a href="http://secure.router">http://secure.router</a></span></div>
+		<button class="tw-button tw-button-small" type="button" id="btn-copy-setup"><%:Copy address%></button>
 	</div>
 	<nav class="tw-nav" role="tablist" aria-label="<%:Setup sections%>">
 		<button type="button" role="tab" data-panel="overview" id="nav-overview" aria-selected="true"><span class="tw-dot"></span><%:Overview%></button>
@@ -389,6 +428,12 @@ box-shadow:var(--shadow);font-weight:500}
 					<button class="tw-button tw-button-danger tw-button-small" type="button" id="btn-disconnect" hidden><%:Disconnect%></button>
 				</div>
 				<p class="tw-message" id="scan-msg" aria-live="polite"></p>
+				<div class="tw-list-heading"><h3><%:Remembered networks%></h3><small><%:In range now — reconnect without typing the password again.%></small></div>
+				<div class="tw-network-list" id="saved-list"><div class="tw-empty"><%:Loading remembered networks…%></div></div>
+				<details class="tw-sub-group tw-saved-away" id="saved-away" hidden>
+					<summary><span class="tw-sub-title"><strong><%:Not nearby%> (<span id="saved-away-count">0</span>)</strong><small><%:Remembered, but the last scan did not find them.%></small></span><span class="tw-sub-chevron" aria-hidden="true">⌄</span></summary>
+					<div class="tw-sub-body"><div class="tw-network-list" id="saved-away-list"></div></div>
+				</details>
 				<div class="tw-list-heading"><h3><%:Nearby networks%></h3><small><%:Choose a network to use it for internet.%></small></div>
 				<div class="tw-network-list" id="net-list"><div class="tw-empty"><%:Looking for nearby Wi-Fi…%></div></div>
 				<div class="tw-join" id="join-box" hidden>
@@ -404,8 +449,6 @@ box-shadow:var(--shadow);font-weight:500}
 					</div>
 					<p class="tw-message" id="join-msg" aria-live="polite"></p>
 				</div>
-				<div class="tw-list-heading"><h3><%:Remembered networks%></h3><small><%:Reconnect without typing the password again, or forget old networks.%></small></div>
-				<div class="tw-network-list" id="saved-list"><div class="tw-empty"><%:Loading remembered networks…%></div></div>
 			</div>
 		</div>
 	</section>
@@ -538,9 +581,32 @@ box-shadow:var(--shadow);font-weight:500}
 	</main>
 </div>
 <div id="toast" class="tw-toast" role="status" hidden></div>
+<div id="cna-overlay" class="tw-cna-overlay" hidden>
+	<div class="tw-cna-card" role="dialog" aria-label="<%:You are online%>">
+		<h2>✓ <%:You are online%></h2>
+		<p class="tw-cna-count" id="cna-count"><%:This window will close shortly so your device marks the Wi-Fi as connected.%></p>
+		<p class="tw-muted"><%:To come back, stay on the setup Wi-Fi, open Safari or Chrome, and enter:%></p>
+		<div class="tw-cna-url"><a id="cna-url" target="_blank" rel="noopener" href="#">secure.router</a></div>
+		<div id="cna-url-ip" class="tw-muted"></div>
+		<p><button id="btn-cna-finish" class="btn cbi-button-positive important"><%:Finish now%></button></p>
+		<p><a href="#" id="cna-later"><%:Stay here to keep setting up →%></a></p>
+	</div>
+</div>
+<div id="cna-banner" class="tw-cna-banner" hidden>
+	<span>✓ <%:Online%></span>
+	<button id="btn-cna-finish2" class="btn cbi-button-positive"><%:Finish Wi-Fi setup%></button>
+</div>
 <script>
 var API = '<%=luci.dispatcher.build_url("admin","travelwizard","api")%>';
 var TOKEN = '<%=token%>';
+/* true when launched by an OS captive-portal popup: our own probe pages
+ * redirect here with a #cna marker (see tw-portal), so plain browser tabs
+ * never take the portal-sheet path below. CaptiveNetworkSupport/wispr only
+ * ever appear in Apple's captive agent, so they are a safe fallback if the
+ * marker got lost (e.g. through a sign-in redirect). */
+var CNA_MODE = (location.hash || '').indexOf('cna') >= 0 ||
+	/CaptiveNetworkSupport|wispr/i.test(navigator.userAgent || '');
+var SETUP_URL = 'http://secure.router';
 /* every call resolves to an object: transport and HTTP failures come back
  * as { error: ... }, so callers only ever check j.error */
 function post(path, data) {
@@ -559,6 +625,11 @@ function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function
 	return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 function el(id) { return document.getElementById(id); }
 function all(q, root) { return Array.prototype.slice.call((root || document).querySelectorAll(q)); }
+/* LuCI's JSON encodes an empty Lua table as {} rather than []: normalize
+ * every API list before calling array methods on it (one empty profiles
+ * reply used to throw and stop all page refreshes). The controller also
+ * sends [] for its own empty lists; this covers anything that slips by. */
+function asList(value) { return Array.isArray(value) ? value : []; }
 function mk(tag, cls, text) {
 	var e = document.createElement(tag);
 	if (cls) e.className = cls;
@@ -579,6 +650,21 @@ function toast(msg) {
 	if (toastTimer) clearTimeout(toastTimer);
 	toastTimer = setTimeout(function() { t.hidden = true; }, 3500);
 }
+function copySetupAddress() {
+	function done(ok) { toast(ok ? '<%:Setup address copied%>' : '<%:Open your browser and enter%> ' + SETUP_URL); }
+	if (navigator.clipboard && navigator.clipboard.writeText) {
+		navigator.clipboard.writeText(SETUP_URL).then(function() { done(true); }, function() { done(false); });
+		return;
+	}
+	/* plain-http pages have no async clipboard API: fall back to a selection */
+	var input = document.createElement('textarea');
+	input.value = SETUP_URL; input.setAttribute('readonly', ''); input.style.position = 'fixed'; input.style.opacity = '0';
+	document.body.appendChild(input); input.select();
+	var ok = false;
+	try { ok = document.execCommand('copy'); } catch (e) {}
+	document.body.removeChild(input); done(ok);
+}
+el('btn-copy-setup').addEventListener('click', copySetupAddress);
 function errMsg(j) {
 	if (j && j.error === 'network')
 		return '<%:Network error — is the router reachable?%>';
@@ -721,7 +807,7 @@ var STATE = { up: null, active: '', wifiSsid: '', net: '', loginUrl: '',
 var NEXT_ACTION = null;
 function activeProfile() {
 	var a = null;
-	(STATE.profiles || []).forEach(function(p) { if (p.active) a = p; });
+	asList(STATE.profiles).forEach(function(p) { if (p.active) a = p; });
 	return a;
 }
 function defaultPasswords() {
@@ -897,9 +983,8 @@ function refreshUpstream() {
 		STATE.active = j.active || '';
 		STATE.wifiSsid = w.ssid || '';
 		showCurrentWifi();
+		/* re-badge both lists (skipped while the user types a password) */
 		paintSaved(LAST_SAVED);
-		/* re-badge the nearby list, unless the user is typing a password */
-		if (LAST_SCAN && !PICK) paintScan(LAST_SCAN);
 		updateOverview();
 		return true;
 	});
@@ -926,27 +1011,40 @@ function settleWifi(want, then) {
 	SETTLE_TIMER = setTimeout(step, delays[0]);
 }
 /* keep the page current without a reload: a light link check while the
- * page is on screen; access and saved networks follow when the link changes */
+ * page is on screen; access and saved networks follow when the link changes.
+ * A failed check followed by a success means this device dropped off the
+ * router's Wi-Fi (radio retune) and came back: refresh everything, since the
+ * optimistic post-join state may already match the link (no visible change)
+ * while access/health/saved fetches made mid-drop failed silently. */
+var LAST_HEARTBEAT_OK = true;
 function heartbeat() {
 	if (document.hidden) return;
-	var before = linkKey();
+	var before = linkKey(), wasOk = LAST_HEARTBEAT_OK;
 	loadLanStatus();
 	refreshUpstream().then(function(ok) {
-		if (ok && linkKey() !== before) { refreshSaved(); checkCaptive(); checkHealth(); }
+		LAST_HEARTBEAT_OK = ok;
+		if (ok && (linkKey() !== before || !wasOk)) { refreshSaved(); checkCaptive(); checkHealth(); }
 	});
 }
 setInterval(heartbeat, 20000);
 document.addEventListener('visibilitychange', heartbeat);
 window.addEventListener('online', refreshAll);
+/* restored from the back/forward cache (e.g. back from a sign-in page):
+ * everything on screen is as old as the moment the page was left */
+window.addEventListener('pageshow', function(e) { if (e.persisted) refreshAll(); });
 el('btn-upstream').addEventListener('click', function() {
 	note('up-msg', '<%:Applying…%>');
 	withBusy(el('btn-upstream'), post('/upstream', { mode: el('up-select').value }), true)
 	.then(function(j) {
 		if (j.error) { note('up-msg', errMsg(j), 'bad'); return; }
-		var s = '<%:Saved. Using%> ' + upName(j.active) + '.';
+		var s = '<%:Saved. Using%> ' + upName(j.active) + '.', kind = 'good';
 		if (j.subnet && j.subnet.changed)
 			s += ' <%:The local network moved to%> ' + j.subnet.lan + '.';
-		note('up-msg', s, 'good');
+		if (j.subnet && j.subnet.error) {
+			s += ' <%:Warning:%> ' + j.subnet.error + '.';
+			kind = 'warn';
+		}
+		note('up-msg', s, kind);
 		if (j.internet) showCaptive(j.internet);
 		refreshAll();
 	});
@@ -1006,7 +1104,6 @@ el('btn-disconnect').addEventListener('click', function() {
 			if (STATE.active === 'wwan') { STATE.active = ''; STATE.up = false; }
 			showCurrentWifi();
 			paintSaved(LAST_SAVED);
-			if (LAST_SCAN && !PICK) paintScan(LAST_SCAN);
 			updateOverview();
 			refreshAll();
 			settleWifi({ up: false });
@@ -1039,7 +1136,10 @@ function openJoinBox(row, n) {
 	box.hidden = false;
 	if (open) el('btn-join').focus(); else el('join-key').focus();
 }
-el('btn-join-cancel').addEventListener('click', closeJoinBox);
+el('btn-join-cancel').addEventListener('click', function() {
+	closeJoinBox();
+	if (NET_STALE) paintNetworks();
+});
 function loadScan() {
 	note('scan-msg', '<%:Looking for nearby networks…%>');
 	return withBusy(el('btn-scan'), Promise.all([post('/scan', {}), post('/wlan_saved', {})]), true)
@@ -1049,65 +1149,91 @@ function loadScan() {
 		var cur = j.current || {};
 		LAST_NET = (cur.saved && cur.saved !== '__unset__') ? cur.saved : '';
 		showCurrentWifi();
-		if (!s.error) paintSaved(s.saved || []);
+		if (!s.error) setSaved(s.saved || []);
 		note('scan-msg', j.partial ? '<%:Some bands were busy — tap Scan to retry.%>' : '', 'warn');
 		paintScan(j.networks || []);
 	});
 }
 el('btn-scan').addEventListener('click', loadScan);
-/* connected first, then remembered, then the rest — strongest first in each */
 function paintScan(nets) {
-	LAST_SCAN = nets;
+	LAST_SCAN = asList(nets);
 	closeJoinBox();
+	paintNetworks();
+}
+function strongerFirst(a, b) { return (sigDbm(b.signal) || -999) - (sigDbm(a.signal) || -999); }
+/* One renderer for both lists: a remembered network shows once, in the
+ * remembered list while the scan sees it (under "Not nearby" otherwise),
+ * and the nearby list holds the rest, connected first then strongest.
+ * NOTE: never repaints under an open join form (it would be destroyed
+ * mid-typing); NET_STALE catches up once the form closes. */
+var NET_STALE = false;
+function paintNetworks() {
+	if (PICK) { NET_STALE = true; return; }
+	NET_STALE = false;
+	var seen = {};
+	(LAST_SCAN || []).forEach(function(n) {
+		if (n.ssid && (!seen[n.ssid] || strongerFirst(n, seen[n.ssid]) < 0)) seen[n.ssid] = n;
+	});
+	paintSavedLists(seen);
+	if (!LAST_SCAN) return;
 	var list = el('net-list');
 	list.innerHTML = '';
-	function rank(n) {
+	function isCur(n) { return CUR_WIFI.up && !!n.ssid && n.ssid === CUR_WIFI.ssid ? 1 : 0; }
+	var rest = LAST_SCAN.filter(function(n) { return !(n.ssid && SAVED_SET[n.ssid]); });
+	rest.sort(function(a, b) { return (isCur(b) - isCur(a)) || strongerFirst(a, b); })
+	.forEach(function(n) {
 		var ssid = n.ssid || '';
-		if (CUR_WIFI.up && ssid !== '' && ssid === CUR_WIFI.ssid) return 0;
-		if (ssid !== '' && SAVED_SET[ssid]) return 1;
-		return 2;
-	}
-	nets.slice().sort(function(a, b) {
-		return (rank(a) - rank(b)) || ((sigDbm(b.signal) || -999) - (sigDbm(a.signal) || -999));
-	}).forEach(function(n) {
-		var ssid = n.ssid || '';
-		var hidden = ssid.indexOf('(hidden)') === 0;
-		var isCur = rank(n) === 0, isSaved = rank(n) === 1;
-		var row = mk('div', 'tw-network' + (isCur ? ' is-active' : ''));
+		var hidden = ssid.indexOf('(hidden)') === 0, cur = isCur(n);
+		var row = mk('div', 'tw-network' + (cur ? ' is-active' : ''));
 		var meta = mk('div', 'tw-network-meta');
-		meta.appendChild(mk('strong', null, (isCur ? '● ' : '') + ssid));
-		meta.appendChild(mk('small', null, [bandLabel(n.band), secLabel(n.encryption),
-			isSaved ? '<%:Remembered%>' : ''].filter(Boolean).join(' · ')));
+		meta.appendChild(mk('strong', null, (cur ? '● ' : '') + ssid));
+		meta.appendChild(mk('small', null, [bandLabel(n.band), secLabel(n.encryption)]
+			.filter(Boolean).join(' · ')));
 		var acts = mk('div', 'tw-actions');
 		var sig = mk('span', 'tw-signal');
 		sig.innerHTML = sigHtml(n.signal);
 		acts.appendChild(sig);
-		if (isCur) {
+		if (cur)
 			acts.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
-		} else if (!hidden) {
-			if (isSaved) {
-				/* the band seen now, not the one saved last time */
-				acts.appendChild(button('<%:Connect%>', 'tw-button-primary', function(b) {
-					rejoinSaved(ssid, n.band || '', b);
-				}));
-			}
-			acts.appendChild(button(isSaved ? '<%:Password…%>' : '<%:Connect…%>', '', function() {
-				openJoinBox(row, n);
-			}));
-		}
+		else if (!hidden)
+			acts.appendChild(button('<%:Connect…%>', '', function() { openJoinBox(row, n); }));
 		row.appendChild(meta); row.appendChild(acts);
 		list.appendChild(row);
 	});
-	if (!nets.length)
+	if (!LAST_SCAN.length)
 		list.innerHTML = emptyState('<%:No Wi-Fi networks found. Try scanning again.%>');
+	else if (!rest.length)
+		list.innerHTML = emptyState('<%:No other networks nearby — your remembered ones are listed above.%>');
+}
+/* optimistic remembered-list update: new entries appear at once, known
+ * ones jump to the top with a fresh timestamp (the server confirms it on
+ * the next refreshSaved). Without the bump, rejoining a known network
+ * leaves it showing a stale "last connected" until a manual reload. */
+function upsertSavedLocal(ssid, band) {
+	if (!ssid) return;
+	var keep = band;
+	if (keep == null) {
+		var prev = null;
+		LAST_SAVED.some(function(n) { if (n.ssid === ssid) { prev = n.band; return true; } return false; });
+		keep = prev || '';
+	}
+	LAST_SAVED = [{ ssid: ssid, band: keep, last_used: Math.floor(Date.now() / 1000) }]
+		.concat(LAST_SAVED.filter(function(n) { return n.ssid !== ssid; }));
 }
 function afterJoin(j) {
-	var s = '<%:Connected to%> ' + (j.ssid || '') + '.';
+	var s = '<%:Connected to%> ' + (j.ssid || '') + '.', kind = 'good';
 	if (j.subnet && j.subnet.changed)
 		s += ' <%:That network clashed with ours, so the local network moved to%> ' +
-			j.subnet.lan + ' / ' + j.subnet.vault + '.';
+			j.subnet.lan + ' / ' + j.subnet.vault + '.' +
+			' <%:If this page stops responding, reconnect your device to pick up the new address.%>';
+	/* a clash the router could not move away from (e.g. no free subnet
+	 * left) must not pass silently: the VPN network may misroute */
+	if (j.subnet && j.subnet.error) {
+		s += ' <%:Warning:%> ' + j.subnet.error + '.';
+		kind = 'warn';
+	}
 	toast(s);
-	note('scan-msg', s, 'good');
+	note('scan-msg', s, kind);
 	/* the router has linked and remembered it: show that now */
 	var seen = (LAST_SCAN || []).filter(function(n) { return n.ssid === j.ssid; })
 		.sort(function(a, b) { return (sigDbm(b.signal) || -999) - (sigDbm(a.signal) || -999); })[0];
@@ -1116,15 +1242,24 @@ function afterJoin(j) {
 	STATE.up = true;
 	STATE.wifiSsid = CUR_WIFI.ssid;
 	if (STATE.active !== 'wan') STATE.active = 'wwan';
-	if (!LAST_SAVED.some(function(n) { return n.ssid === j.ssid; }))
-		LAST_SAVED = [{ ssid: j.ssid, band: seen ? seen.band : '',
-			last_used: Math.floor(Date.now() / 1000) }].concat(LAST_SAVED);
+	upsertSavedLocal(j.ssid, seen ? seen.band : null);
 	showCurrentWifi();
+	closeJoinBox();
 	paintSaved(LAST_SAVED);
-	if (LAST_SCAN) paintScan(LAST_SCAN);
-	if (j.internet) showCaptive(j.internet); else updateOverview();
+	/* the join reply no longer waits for the captive probe (it could outlast
+	 * uhttpd's timeout): show "checking" until /captive answers, rather than
+	 * the previous network's verdict */
+	if (j.internet) showCaptive(j.internet);
+	else {
+		STATE.net = '';
+		el('net-status').className = 'tw-callout';
+		el('net-status').textContent = '<%:Checking for a sign-in page…%>';
+		updateOverview();
+	}
 	refreshAll();
-	settleWifi({ up: true, ssid: j.ssid || '' });
+	/* the tunnel restarts on uplink switches (hotplug): re-check protection
+	 * once the link settles, not just the link itself */
+	settleWifi({ up: true, ssid: j.ssid || '' }, function() { checkCaptive(); checkHealth(); });
 }
 /* The join reply never arrived: usually this device dropped off the
  * router's Wi-Fi while the radio retuned, and the join went on without us.
@@ -1137,7 +1272,10 @@ function confirmJoin(ssid, msgId) {
 			return;
 		}
 		if (PICK && PICK.ssid === ssid) closeJoinBox();
-		if (LAST_SCAN && !PICK) paintScan(LAST_SCAN);
+		/* settleWifi already refreshed the server list; make sure the
+		 * confirmed network tops it even if that fetch raced the save */
+		upsertSavedLocal(ssid, null);
+		paintSaved(LAST_SAVED);
 		note('scan-msg', '<%:Connected to%> ' + ssid + '.', 'good');
 		toast('<%:Connected to%> ' + ssid + '.');
 		checkCaptive();
@@ -1165,42 +1303,76 @@ function refreshSaved() {
 		if (!j.error) paintSaved(j.saved || []);
 	});
 }
-function paintSaved(list) {
-	var box = el('saved-list');
-	box.innerHTML = '';
+function setSaved(list) {
+	/* a non-array in LAST_SAVED would throw in upsertSavedLocal */
+	LAST_SAVED = asList(list);
 	SAVED_SET = {};
-	LAST_SAVED = list;
-	if (!list.length) {
-		box.innerHTML = emptyState('<%:Networks you join are remembered here for one-tap reconnect.%>');
-		return;
-	}
-	list.forEach(function(n) {
-		SAVED_SET[n.ssid] = 1;
-		var isCur = CUR_WIFI.up && n.ssid === CUR_WIFI.ssid;
-		var row = mk('div', 'tw-network' + (isCur ? ' is-active' : ''));
-		var meta = mk('div', 'tw-network-meta');
-		meta.appendChild(mk('strong', null, (isCur ? '● ' : '') + n.ssid));
-		meta.appendChild(mk('small', null, ['<%:Last connected%> ' + ago(n.last_used),
-			bandLabel(n.band)].filter(Boolean).join(' · ')));
-		var acts = mk('div', 'tw-actions');
-		if (isCur)
-			acts.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
-		else
-			acts.appendChild(button('<%:Connect%>', 'tw-button-primary', function(b) {
-				rejoinSaved(n.ssid, '', b);
-			}));
-		acts.appendChild(button('<%:Forget%>', 'tw-button-danger', function(f) {
-			arm(f, function() {
-				withBusy(f, post('/wlan_forget', { ssid: n.ssid }), true).then(function(r) {
-					if (r.error) { toast(errMsg(r)); return; }
-					toast('<%:Forgotten:%> ' + n.ssid);
-					refreshSaved().then(function() { if (LAST_SCAN && !PICK) paintScan(LAST_SCAN); });
-				});
-			});
-		}));
-		row.appendChild(meta); row.appendChild(acts);
-		box.appendChild(row);
+	LAST_SAVED.forEach(function(n) { SAVED_SET[n.ssid] = 1; });
+}
+function paintSaved(list) {
+	setSaved(list);
+	paintNetworks();
+}
+/* seen: ssid -> strongest scan entry. Before the first scan nothing counts
+ * as out of range. */
+function paintSavedLists(seen) {
+	var box = el('saved-list'), awayBox = el('saved-away-list');
+	var near = [], away = [];
+	function isCur(n) { return CUR_WIFI.up && n.ssid === CUR_WIFI.ssid ? 1 : 0; }
+	LAST_SAVED.forEach(function(n) {
+		(!LAST_SCAN || isCur(n) || seen[n.ssid] ? near : away).push(n);
 	});
+	near.sort(function(a, b) {
+		return (isCur(b) - isCur(a)) ||
+			(seen[a.ssid] && seen[b.ssid] ? strongerFirst(seen[a.ssid], seen[b.ssid]) : 0);
+	});
+	box.innerHTML = '';
+	awayBox.innerHTML = '';
+	near.forEach(function(n) { box.appendChild(savedRow(n, seen[n.ssid], isCur(n))); });
+	away.forEach(function(n) { awayBox.appendChild(savedRow(n, null, false)); });
+	el('saved-away-count').textContent = away.length;
+	el('saved-away').hidden = !away.length;
+	if (!LAST_SAVED.length)
+		box.innerHTML = emptyState('<%:Networks you join are remembered here for one-tap reconnect.%>');
+	else if (!near.length)
+		box.innerHTML = emptyState('<%:None of your remembered networks are in range right now.%>');
+}
+/* live: the scan entry (signal, band seen now), null when out of range */
+function savedRow(n, live, cur) {
+	var row = mk('div', 'tw-network' + (cur ? ' is-active' : ''));
+	var meta = mk('div', 'tw-network-meta');
+	meta.appendChild(mk('strong', null, (cur ? '● ' : '') + n.ssid));
+	meta.appendChild(mk('small', null, [bandLabel(live ? live.band : n.band),
+		live ? secLabel(live.encryption) : '',
+		'<%:Last connected%> ' + ago(n.last_used)].filter(Boolean).join(' · ')));
+	var acts = mk('div', 'tw-actions');
+	if (live) {
+		var sig = mk('span', 'tw-signal');
+		sig.innerHTML = sigHtml(live.signal);
+		acts.appendChild(sig);
+	}
+	if (cur) {
+		acts.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
+	} else {
+		/* the band seen now, not the one saved last time */
+		acts.appendChild(button('<%:Connect%>', 'tw-button-primary', function(b) {
+			rejoinSaved(n.ssid, live ? live.band || '' : '', b);
+		}));
+		/* the password may have changed since (hotels rotate them) */
+		if (live)
+			acts.appendChild(button('<%:Password…%>', '', function() { openJoinBox(row, live); }));
+	}
+	acts.appendChild(button('<%:Forget%>', 'tw-button-danger', function(f) {
+		arm(f, function() {
+			withBusy(f, post('/wlan_forget', { ssid: n.ssid }), true).then(function(r) {
+				if (r.error) { toast(errMsg(r)); return; }
+				toast('<%:Forgotten:%> ' + n.ssid);
+				refreshSaved();
+			});
+		});
+	}));
+	row.appendChild(meta); row.appendChild(acts);
+	return row;
 }
 /* band: where the scan sees it now; blank = the band saved last time */
 function rejoinSaved(ssid, band, btn) {
@@ -1229,7 +1401,8 @@ function showCaptive(j) {
 	el('hotel-steps').hidden = STATE.net !== 'captive';
 	if (STATE.net === 'online') {
 		box.classList.add('is-good');
-		box.innerHTML = '<strong><%:You are online.%></strong> <%:No sign-in needed.%>';
+		box.innerHTML = '<strong><%:You are online.%></strong> <%:No sign-in needed.%> ' +
+			'<%:To return later, open%> <a href="' + SETUP_URL + '">' + SETUP_URL + '</a>.';
 		badge.textContent = '<%:Online%>';
 		setKind(badge, 'good');
 	} else if (STATE.net === 'captive') {
@@ -1253,7 +1426,86 @@ function showCaptive(j) {
 			if (!document.hidden) checkCaptive();
 		}, 15000);
 	updateOverview();
+	cnaOnline();
 }
+/* An OS captive sheet only clears when it SEES genuine internet: the
+ * background re-polls don't fire promptly, and reloading our own page does
+ * nothing (verified live: the sheet stays at Cancel/X). What flips it is
+ * loading a real probe URL — the sheet's back button re-fetches
+ * captive.apple.com/hotspot-detect.html, gets "Success", and iOS offers
+ * Done. So when the router is online inside a portal-launched sheet, show
+ * where to continue setup (the secure.router name survives subnet moves),
+ * then perform the probe-URL navigation after a short countdown: no tap is
+ * needed, "Finish now" skips the wait and "Stay here" cancels it (a banner
+ * keeps Finish in reach). Ordinary tabs are untouched. Finish is one-shot
+ * per sheet (sessionStorage), so the non-Apple reload path cannot loop back
+ * into the overlay.
+ * SETUP_URL needs no path: the bare host lands on the wizard after login
+ * (the wizard is the first LuCI child, so it is the default target). */
+var CNA_DONE = false, CNA_LATER = false, CNA_TIMER = null, CNA_LEFT = 0;
+var CNA_SECONDS = 8;
+try { CNA_DONE = sessionStorage.getItem('twCnaDone') === '1'; } catch (e) {}
+function cnaShowOverlay() {
+	var a = el('cna-url');
+	a.href = SETUP_URL;
+	a.textContent = SETUP_URL.replace(/^http:\/\//, '');
+	var host = location.hostname || '';
+	el('cna-url-ip').textContent = (host && host !== 'secure.router')
+		? '(http://' + host + ')' : '';
+	el('cna-banner').hidden = true;
+	el('cna-overlay').hidden = false;
+	cnaCountdown();
+}
+function cnaStopCountdown() {
+	if (CNA_TIMER) { clearInterval(CNA_TIMER); CNA_TIMER = null; }
+}
+function cnaCountdown() {
+	if (CNA_TIMER) return;
+	CNA_LEFT = CNA_SECONDS;
+	function paint() {
+		el('cna-count').textContent = '<%:Finishing in%> ' + CNA_LEFT +
+			' s <%:so your device marks the Wi-Fi as connected.%>';
+	}
+	paint();
+	CNA_TIMER = setInterval(function() {
+		CNA_LEFT--;
+		if (CNA_LEFT > 0) { paint(); return; }
+		cnaStopCountdown();
+		cnaFinish();
+	}, 1000);
+}
+function cnaFinish() {
+	cnaStopCountdown();
+	if (CNA_DONE) return;
+	CNA_DONE = true;
+	try { sessionStorage.setItem('twCnaDone', '1'); } catch (e) {}
+	el('cna-overlay').hidden = true;
+	el('cna-banner').hidden = true;
+	if (/iPhone|iPad|iPod|Macintosh/i.test(navigator.userAgent))
+		location.assign('http://captive.apple.com/hotspot-detect.html');
+	else
+		location.reload();
+}
+function cnaOnline() {
+	if (!CNA_MODE || CNA_DONE) return;
+	if (STATE.net !== 'online') {
+		cnaStopCountdown();
+		el('cna-overlay').hidden = true;
+		el('cna-banner').hidden = true;
+		return;
+	}
+	if (CNA_LATER) { el('cna-banner').hidden = false; return; }
+	cnaShowOverlay();
+}
+el('btn-cna-finish').addEventListener('click', cnaFinish);
+el('btn-cna-finish2').addEventListener('click', cnaFinish);
+el('cna-later').addEventListener('click', function(ev) {
+	ev.preventDefault();
+	cnaStopCountdown();
+	CNA_LATER = true;
+	el('cna-overlay').hidden = true;
+	el('cna-banner').hidden = false;
+});
 el('btn-recheck').addEventListener('click', function() { checkCaptive(el('btn-recheck')); });
 /* back from the sign-in tab: check at once instead of waiting for the timer */
 document.addEventListener('visibilitychange', function() {
@@ -1309,12 +1561,28 @@ el('btn-health-overview').addEventListener('click', function() { checkHealth(el(
 function refreshProfiles() {
 	return post('/profiles', {}).then(function(j) {
 		if (j.error) { note('files-msg', errMsg(j), 'bad'); return; }
-		var profiles = j.profiles || [];
+		/* a non-array here would throw in every updateOverview below */
+		var profiles = asList(j.profiles);
 		STATE.profiles = profiles;
 		renderNative(profiles.filter(function(p) { return p.type !== 'singbox'; }));
 		renderSubs(profiles.filter(function(p) { return p.type === 'singbox'; }));
 		updateOverview();
 	});
+}
+/* after a tunnel (re)start the first health check often lands while
+ * sing-box is still handshaking or pbr is still installing the route:
+ * down/no-egress right after an apply usually means "converging", not
+ * "broken". Re-check a few times before leaving the failure on screen, so
+ * a slow first connect heals by itself instead of needing a manual retry. */
+function pollHealthConverge(tries) {
+	if (tries <= 0 || document.hidden) return;
+	var m = STATE.health ? STATE.health.mode || '' : '';
+	var v = STATE.health ? STATE.health.verdict || '' : '';
+	if (m === '' || m === 'off') return;
+	if (v !== 'down' && v !== 'no-egress') return;
+	setTimeout(function() {
+		checkHealth().then(function() { pollHealthConverge(tries - 1); });
+	}, 3000);
 }
 function activateProfile(id, btn, msgId) {
 	note(msgId, id ? '<%:Starting the tunnel…%>' : '<%:Turning the VPN off…%>');
@@ -1323,7 +1591,8 @@ function activateProfile(id, btn, msgId) {
 		else if (j.warning) note(msgId, j.warning, 'warn');
 		else if (id) note(msgId, '<%:VPN on:%> ' + (j.profile || modeLabel(j.mode)), 'good');
 		else note(msgId, '<%:VPN off — private Wi-Fi devices are offline.%>', 'good');
-		refreshProfiles(); checkHealth();
+		refreshProfiles();
+		checkHealth().then(function() { pollHealthConverge(4); });
 	});
 }
 el('btn-vpn-off').addEventListener('click', function() {
@@ -1435,7 +1704,8 @@ function selectEndpoint(p, tag, btn) {
 		note('subs-msg', '<%:Connected to%> ' + tag + '.' + (j.warning ? ' ' + j.warning : ''),
 			j.warning ? 'warn' : 'good');
 		OPEN_SUBS[p.id] = true;
-		refreshProfiles(); checkHealth();
+		refreshProfiles();
+		checkHealth().then(function() { pollHealthConverge(4); });
 	});
 }
 /* Connect tests the endpoint first; on failure the button turns into
@@ -1461,7 +1731,7 @@ function connectEndpoint(p, tag, btn, pill) {
 }
 /* e.g. "VLESS · WS · Reality", from the controller's per-tag details */
 var PROTO_NAMES = { vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', shadowsocks: 'Shadowsocks',
-	hysteria2: 'Hysteria2', tuic: 'TUIC', wireguard: 'WireGuard', socks: 'SOCKS', http: 'HTTP' };
+	hysteria2: 'Hysteria2', tuic: 'TUIC', anytls: 'AnyTLS', naive: 'Naive', wireguard: 'WireGuard', socks: 'SOCKS', http: 'HTTP' };
 var TRANSPORT_NAMES = { ws: 'WS', grpc: 'gRPC', http: 'HTTP/2', httpupgrade: 'HTTPUpgrade', quic: 'QUIC' };
 function protoLabel(pr) {
 	if (!pr || !pr.type) return '';
@@ -1533,14 +1803,20 @@ function testAll(p, eps, btn, prog) {
 		endProbing();
 	});
 }
+/* endpoints the importer left out (unsupported/unrunnable): named, not silent */
+function skippedNote(j) {
+	if (!j.skipped || !j.skipped.length) return '';
+	return ' <%:Skipped:%> ' + j.skipped.join('; ') + '.';
+}
 function refreshSub(p, btn) {
 	note('subs-msg', '<%:Updating%> ' + p.name + '…');
 	withBusy(btn, post('/profile_refresh', { id: p.id }), true).then(function(j) {
 		if (j.error) { note('subs-msg', errMsg(j), 'bad'); return; }
 		forgetProbes(p.id);
 		OPEN_SUBS[p.id] = true;
+		var flag = j.warning || (j.skipped && j.skipped.length);
 		note('subs-msg', p.name + ': ' + (j.count != null ? j.count : '?') + ' <%:endpoints%>' +
-			(j.warning ? ' · ' + j.warning : ''), j.warning ? 'warn' : 'good');
+			(j.warning ? ' · ' + j.warning : '') + skippedNote(j), flag ? 'warn' : 'good');
 		refreshProfiles();
 		if (p.active) checkHealth();
 	});
@@ -1550,7 +1826,7 @@ function renderSubs(list) {
 	var box = el('sub-list');
 	box.innerHTML = '';
 	list.forEach(function(p) {
-		var srv = Array.isArray(p.servers) ? p.servers : [];
+		var srv = asList(p.servers);
 		var det = mk('details', 'tw-sub-group');
 		det.setAttribute('data-profile-id', p.id);
 		det.open = OPEN_SUBS[p.id] != null ? OPEN_SUBS[p.id] : (p.active || list.length === 1);
@@ -1752,8 +2028,9 @@ el('btn-sub-save').addEventListener('click', function() {
 		if (d.sub_url || links) forgetProbes(sid);
 		OPEN_SUBS[sid] = true;
 		el('sub-edit').hidden = true;
+		var flag = j.warning || (j.skipped && j.skipped.length);
 		note('subs-msg', (id ? '<%:Saved.%>' : '<%:Subscription added.%>') +
-			(j.warning ? ' ' + j.warning : ''), j.warning ? 'warn' : 'good');
+			(j.warning ? ' ' + j.warning : '') + skippedNote(j), flag ? 'warn' : 'good');
 		refreshProfiles().then(function() {
 			var g = document.querySelector('[data-profile-id="' + sid + '"]');
 			if (g) g.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1804,6 +2081,7 @@ function loadWifi() {
 		el('ssid-mgmt').textContent = j.mgmt_ssid || '—';
 		el('ssid-vault').textContent = j.vault_ssid || '—';
 		el('mgmt-name').textContent = j.mgmt_ssid || '…';
+		el('return-mgmt').textContent = j.mgmt_ssid || '<%:the setup Wi-Fi%>';
 		paintLanStatus();
 		updateOverview();
 	});

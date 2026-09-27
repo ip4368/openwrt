@@ -100,6 +100,11 @@ for f in generate_204 gen_204 hotspot-detect.html redirect connecttest.txt ncsi.
 	[ -f "$TMP/www/$f" ] || fail "probe page $f missing"
 	grep -q 'http://192.168.40.1/cgi-bin/luci/admin/travelwizard' "$TMP/www/$f" \
 		|| fail "probe page $f has no wizard URL"
+	# the #cna marker tells the wizard it runs in an OS captive sheet, so
+	# coming online reloads the sheet once (the navigation is what makes
+	# the OS re-verify internet access and offer Done)
+	grep -q 'admin/travelwizard#cna' "$TMP/www/$f" \
+		|| fail "probe page $f missing the #cna sheet marker"
 done
 ok
 
@@ -213,12 +218,14 @@ ok
 ok
 
 # 10. offline + stale hijack + custom entry -> swap stale, keep custom.
-export DHCP_ADDRS="/#/10.0.0.9 /example.com/1.2.3.4"
+export DHCP_ADDRS="/#/10.0.0.9 /example.com/1.2.3.4 /secure.router/192.168.40.1"
 OUT=$(run auto) || fail "auto exited nonzero"
 grep -q 'uci del_list dhcp.@dnsmasq\[0\].address=/#/10.0.0.9' "$UCI_LOG" \
 	|| fail "stale not removed: [$(cat "$UCI_LOG")]"
 ok
 grep -q 'example.com' "$UCI_LOG" && fail "custom entry touched: [$(cat "$UCI_LOG")]"
+ok
+grep -q 'secure\.router' "$UCI_LOG" && fail "setup name touched: [$(cat "$UCI_LOG")]"
 ok
 grep -q 'uci add_list dhcp.@dnsmasq\[0\].address=/#/192.168.40.1' "$UCI_LOG" \
 	|| fail "current not added: [$(cat "$UCI_LOG")]"
@@ -227,12 +234,14 @@ ok
 ok
 
 # 11. uplink up + hijack present -> remove, restart once.
-export TW_LINK_UP="wwan" DHCP_ADDRS="/#/192.168.40.1"
+export TW_LINK_UP="wwan" DHCP_ADDRS="/#/192.168.40.1 /secure.router/192.168.40.1"
 OUT=$(run auto) || fail "auto exited nonzero"
 [ "$OUT" = '{"portal":false,"uplink":"wwan"}' ] || fail "json: [$OUT]"
 ok
 grep -q 'uci del_list dhcp.@dnsmasq\[0\].address=/#/192.168.40.1' "$UCI_LOG" \
 	|| fail "hijack not removed: [$(cat "$UCI_LOG")]"
+ok
+grep -q 'secure\.router' "$UCI_LOG" && fail "setup name touched on lift: [$(cat "$UCI_LOG")]"
 ok
 [ "$(grep -c 'dnsmasq restart' "$DNS_LOG")" = "1" ] || fail "no restart"
 ok

@@ -41,7 +41,12 @@ side switch ──> physical LAN jack joins Setup/direct or Vault/protected brid
 | `Travel-Vault` (+ wired LAN in protected position) | `vault` 10.20.30.1/24¹ | vault → vpn only | WireGuard / OpenVPN / sing-box TUN, else nothing |
 
 ¹ Defaults, editable in the wizard; `tw-subnet-fix` also re-addresses on
-upstream overlap (see below).
+upstream overlap (see below). The wizard itself is always at
+`http://secure.router` from the setup network —
+`tw-subnet-fix` keeps that name on the current LAN address across moves
+(no path needed: the wizard is the default LuCI landing page after login).
+A "Need this page again later?" strip at the top of the wizard repeats the
+setup SSID and address, with a Copy button.
 
 Both SSIDs are broadcast on **both radios** (2.4 + 5 GHz) so 2.4-only clients
 still get VPN. The upstream client (`wwan`) shares the first radio, which
@@ -51,18 +56,28 @@ VPN modes (`travelwizard.main.vpn_mode`): `off | wireguard | openvpn | singbox`.
 The `vpn` firewall zone statically matches all tunnel interfaces (`tw_wg`,
 `tun_tw`, `tun0`); `tw-vpn-apply` only starts/stops tunnels and points the
 `pbr` policy `vault-via-vpn` (vault subnet → tunnel) at the active one.
+`tw-vpn-apply` also owns each tunnel's address in netifd (`vpntun` static),
+so a network reload re-asserts it instead of flushing it and stalling the
+vault. ICMP (ping) is dropped inside sing-box tunnels — some proxy
+protocols can't carry it, and tunneling it only produced log spam;
+TCP/UDP/DNS are unaffected.
 
 ## What's in the feed
 
 - `feed/travelwizard/` — backend, no LuCI dependency, all script:
   - `files/etc/config/travelwizard` — wizard UCI (SSIDs, subnets, mode, WG/OVPN/proxy settings)
   - `files/usr/sbin/tw-wan-scan` — nearby Wi-Fi as JSON + current/saved upstream
-  - `files/usr/sbin/tw-wan-join '<ssid>' '[key]'` — join upstream, then subnet-fix + captive check
+  - `files/usr/sbin/tw-wan-join '<ssid>' '[key]'` — join upstream, then subnet-fix + portal lift; replies as soon as the link is up (the UI runs the captive check separately)
   - `files/usr/sbin/tw-subnet-fix` — overlap detect; re-addresses LAN/vault to a free /24 (and moves the pbr policy with it)
   - `files/usr/sbin/tw-captive-check` — `generate_204`-style probes → `online | captive | offline` + login URL
   - `files/usr/sbin/tw-sub-import '<url|link|->'` — subscription/single link → `/etc/sing-box/config.json`
-    (vmess/vless/trojan/ss, incl. base64 subs and reality/ws options; capped at 32 nodes).
+    (vmess/vless/trojan/ss/naive/hysteria2/tuic/anytls, incl. base64 subs and reality/ws options; capped at 32 nodes;
+    naive links are skipped when the installed sing-box build lacks the naive outbound).
     Also writes `.tags` (endpoint names) and `.map` (endpoint → source link) sidecars.
+    Failed fetch attempts are logged to syslog (`logread | grep tw-sub-import`)
+    with the curl exit code and HTTP status. A TLS failure on a fresh-boot
+    clock waits for NTP (kicks ntpd, up to 90s) instead of failing, since
+    the router has no RTC and every cert reads "not yet valid" until sync.
   - `files/usr/sbin/tw-probe '<profile>' '<endpoint>'` — full end-to-end latency
     test of one endpoint: a throwaway sing-box (loopback SOCKS, no TUN) fetches
     a probe URL through just that endpoint and reports ok/latency_ms
@@ -95,12 +110,16 @@ tile shows live status (green/amber/red dot + one-line preview):
   secured flagged); each radio is scanned with retries plus a kernel-cache
   (`iw scan dump`) fallback, since a connected radio briefly refuses fresh
   scans — a band that still fails is flagged `partial` and the UI asks for
-  a re-tap. The UI sorts connected first, then saved, then the
-  rest, with phone-style signal bars and Connected/Saved badges.
+  a re-tap. Remembered networks the scan sees are listed first (connected,
+  then strongest, with live signal and one-tap Connect); remembered ones
+  out of range fold into a collapsible "Not nearby" group, and the Nearby
+  list below holds only the rest, with phone-style signal bars.
   `tw-wan-join` places the client on the matching radio band, picks the
   WPA mode from scan data, then runs the subnet fix (auto re-address +
-  notice in UI) and the captive check. Joined networks are remembered
-  (SSID + key, server-side only) for one-tap reconnect from the Saved
+  notice in UI) and replies without waiting for the captive check (which
+  could outlast uhttpd's 60 s timeout); the UI shows "checking" and asks
+  `/captive` on its own. Joined networks are remembered
+  (SSID + key, server-side only) for one-tap reconnect from the Remembered
   networks list, with Forget to drop one.
 - **Hotel sign-in** — `tw-captive-check` probes
   `connectivitycheck.gstatic.com/generate_204` (+ Apple/MSFT fallbacks). If a
@@ -111,7 +130,7 @@ tile shows live status (green/amber/red dot + one-line preview):
   setup), switch with one click; only the active profile drives the vault
   network. Secrets never leave the router (blank field = keep). WireGuard
   paste-a-`.conf` auto-fill, OpenVPN paste-`.ovpn` + optional auth, proxy
-  subscription URL or pasted links imported on save (vmess/vless/trojan/ss,
+  subscription URL or pasted links imported on save (vmess/vless/trojan/ss/naive/hysteria2/tuic/anytls,
   fetches retried for flaky hotel wifi, with a clear error when the server
   returns something else, e.g. Clash YAML or a login page). Each proxy
   profile lists its **servers** as a foldable
@@ -132,7 +151,11 @@ tile shows live status (green/amber/red dot + one-line preview):
   OS probe pages that bounce to the wizard — so a joining phone pops
   "Sign in to Wi-Fi" straight into setup. Deliberately offline-only: with
   a link up (even captive) the portal lifts (rules, DNS and all) so the
-  hotel's own login page stays reachable.
+  hotel's own login page stays reachable. The probe pages send the popup to
+  the wizard with a `#cna` marker; once the router is online, the wizard
+  shows the way back (`http://secure.router`) and after an 8 s countdown
+  (or **Finish now**) loads Apple's probe URL so iOS re-checks and offers
+  Done. **Stay here** cancels the countdown and keeps a Finish banner.
 - **Checkup** — `tw-vpn-health` verdict in plain words ("Protection is
   working", "VPN isn't working", "Safety lock is on"…), with IPs, vault DNS
   and the tunnel-routed DNS result folded under Technical details, plus a
