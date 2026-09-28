@@ -11,6 +11,7 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - travelwizard
 
 permissions:
   contents: read

@@ -19,6 +19,7 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - travelwizard
   workflow_dispatch:
 
 permissions:

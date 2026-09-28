@@ -19,6 +19,7 @@ on:
       - 'target/linux/**'
     branches-ignore:
       - master
+      - travelwizard
   workflow_dispatch:
 
 permissions:
