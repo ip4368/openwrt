@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-travelwizard
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=10
+PKG_RELEASE:=12
 PKG_LICENSE:=MIT
 PKGARCH:=all
 

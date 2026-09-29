@@ -69,7 +69,7 @@ TCP/UDP/DNS are unaffected.
   - `files/usr/sbin/tw-wan-scan` — nearby Wi-Fi as JSON + current/saved upstream
   - `files/usr/sbin/tw-wan-join '<ssid>' '[key]'` — join upstream, then subnet-fix + portal lift; replies as soon as the link is up (the UI runs the captive check separately)
   - `files/usr/sbin/tw-subnet-fix` — overlap detect; re-addresses LAN/vault to a free /24 (and moves the pbr policy with it)
-  - `files/usr/sbin/tw-captive-check` — `generate_204`-style probes → `online | captive | offline` + login URL
+  - `files/usr/sbin/tw-captive-check` — `generate_204`-style probes → `online | captive | offline` + login URL; handles inline pages, absolute/relative redirects and HTTP 511
   - `files/usr/sbin/tw-sub-import '<url|link|->'` — subscription/single link → `/etc/sing-box/config.json`
     (vmess/vless/trojan/ss/naive/hysteria2/tuic/anytls, incl. base64 subs and reality/ws options; capped at 32 nodes;
     naive links are skipped when the installed sing-box build lacks the naive outbound).
@@ -86,6 +86,7 @@ TCP/UDP/DNS are unaffected.
   - `files/usr/sbin/tw-wifi-apply` — rename/rekey both SSIDs on all radios
   - `files/usr/sbin/tw-upstream` — report/set preferred upstream (wifi/ethernet/auto) via route metrics
   - `files/usr/sbin/tw-lan-switch` — report/move the physical LAN jack between the direct and protected bridges
+  - `files/usr/sbin/tw-time` — report the clock, set it from the browser, or restart internet-time synchronization
   - `files/usr/lib/travelwizard/common.sh` — upstream detect, IPv4 math, kill-switch audit, vault DNS/pbr helpers
   - `files/etc/uci-defaults/90-travelwizard` — first-boot network/wireless/firewall/dhcp layout
   - `files/etc/hotplug.d/iface/30-tw-subnet` — re-run subnet fix when upstream (re)connects
@@ -122,10 +123,16 @@ tile shows live status (green/amber/red dot + one-line preview):
   (SSID + key, server-side only) for one-tap reconnect from the Remembered
   networks list, with Forget to drop one.
 - **Hotel sign-in** — `tw-captive-check` probes
-  `connectivitycheck.gstatic.com/generate_204` (+ Apple/MSFT fallbacks). If a
+  `connectivitycheck.gstatic.com/generate_204` (+ Apple/MSFT/Huawei fallbacks). If a
   portal hijacks it, the screen shows numbered steps + **Open hotel sign-in**
   (the redirect target) + **Check again**, and keeps polling so it notices
-  by itself once you finish the portal on another tab/device.
+  by itself once you finish the portal on another tab/device. HTTP 511 and
+  relative redirects are treated as captive. A portal answer does not stop
+  the fallbacks: if any probe gets genuine internet, the result is online, so
+  a network that only filters one probe host is not mistaken for a portal.
+  If every probe times out or otherwise fails, the screen explains what to
+  try, offers a plain-HTTP **Try sign-in page** fallback, lists each probe's
+  failure under Technical detail, and retries automatically.
 - **VPN** — profiles: save as many as you like (pre-trip
   setup), switch with one click; only the active profile drives the vault
   network. Secrets never leave the router (blank field = keep). WireGuard
@@ -143,6 +150,10 @@ tile shows live status (green/amber/red dot + one-line preview):
   (`tw-wifi-qr` + `/wifi_qr`, regenerated on save). This screen also shows
   whether the side switch currently places the wired LAN jack on the direct
   or protected network.
+- **Settings / clock recovery** — shows router time beside the browser's time,
+  retries NTP after a hotel sign-in, and can copy the browser's epoch to the
+  router when captive access blocks NTP. A persistent timestamp prevents the
+  next reboot from falling all the way back to the firmware build date.
 - **Setup portal** — while the router has no upstream link, `tw-portal`
   (driven by the wwan/wan hotplug hook, a boot init script, and a firewall
   include that survives `fw4` restarts) answers all DNS with the router IP
@@ -257,6 +268,7 @@ the wizard's Wi-Fi section on first login.
 tw-wan-scan | jsonfilter -e '@.networks[*].ssid'
 tw-wan-join 'Hotel_WiFi' 'secret'   # then check the wizard UI too
 tw-captive-check
+tw-time status
 tw-sub-import 'https://example.com/sub'   # or a single 'vless://…' link
 tw-probe 'p1_xxx' 'endpoint name'   # full latency test of one endpoint
 tw-lan-switch status                # direct or protected wired LAN

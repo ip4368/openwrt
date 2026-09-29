@@ -1,0 +1,78 @@
+#!/bin/sh
+# Report or repair the router clock. Travel routers have no useful RTC, and a
+# captive network can block NTP until its login page has been completed.
+# Usage: tw-time status | set <unix-epoch> | sync
+. "${TW_JSHN:-/usr/share/libubox/jshn.sh}"
+
+DATE_BIN="${TW_DATE:-date}"
+UCI_BIN="${TW_UCI:-uci}"
+NTP_INIT="${TW_NTP_INIT:-/etc/init.d/sysntpd}"
+TIME_MARKER="${TW_TIME_MARKER:-/etc/travelwizard.time}"
+
+json_error() {
+	json_init
+	json_add_string error "$1"
+	json_dump
+}
+
+time_status() { # optional sync-started boolean
+	local epoch utc zone enabled
+	epoch=$("$DATE_BIN" +%s 2>/dev/null) || {
+		json_error "could not read router time"
+		return 1
+	}
+	utc=$("$DATE_BIN" -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
+	zone=$("$UCI_BIN" -q get system.@system[0].zonename 2>/dev/null)
+	[ -n "$zone" ] || zone=UTC
+	enabled=$("$UCI_BIN" -q get system.ntp.enabled 2>/dev/null)
+	[ "$enabled" = "0" ] && enabled=0 || enabled=1
+
+	json_init
+	json_add_int epoch "$epoch"
+	json_add_string utc "$utc"
+	json_add_string timezone "$zone"
+	json_add_boolean ntp_enabled "$enabled"
+	[ "$1" = "1" ] && json_add_boolean sync_started 1
+	json_dump
+}
+
+case "${1:-status}" in
+	status)
+		time_status 0
+		;;
+	set)
+		epoch="$2"
+		case "$epoch" in ''|*[!0-9]*) json_error "invalid device time"; exit 1 ;; esac
+		# Deliberately broad, but reject obvious browser/input mistakes.
+		if [ "$epoch" -lt 1577836800 ] 2>/dev/null \
+			|| [ "$epoch" -gt 4102444800 ] 2>/dev/null; then
+			json_error "device time is outside the supported range"
+			exit 1
+		fi
+		if ! "$DATE_BIN" -s "@$epoch" >/dev/null 2>&1; then
+			json_error "could not set router time"
+			exit 1
+		fi
+		# sysfixtime uses the newest persistent /etc mtime on the next boot.
+		# This marker prevents a manually repaired clock from falling all the
+		# way back to the firmware build date before NTP reconnects.
+		touch "$TIME_MARKER" 2>/dev/null || :
+		[ -x "$NTP_INIT" ] && "$NTP_INIT" restart >/dev/null 2>&1
+		time_status 0
+		;;
+	sync)
+		if [ ! -x "$NTP_INIT" ]; then
+			json_error "internet time service is unavailable"
+			exit 1
+		fi
+		"$NTP_INIT" restart >/dev/null 2>&1 || {
+			json_error "could not restart internet time service"
+			exit 1
+		}
+		time_status 1
+		;;
+	*)
+		json_error "usage: tw-time status|set <epoch>|sync"
+		exit 1
+		;;
+esac

@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=travelwizard
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=15
+PKG_RELEASE:=17
 PKG_LICENSE:=MIT
 PKGARCH:=all
 
@@ -60,6 +60,7 @@ define Package/travelwizard/install
 	$(INSTALL_BIN) ./files/usr/sbin/tw-wifi-apply $(1)/usr/sbin/tw-wifi-apply
 	$(INSTALL_BIN) ./files/usr/sbin/tw-upstream $(1)/usr/sbin/tw-upstream
 	$(INSTALL_BIN) ./files/usr/sbin/tw-lan-switch $(1)/usr/sbin/tw-lan-switch
+	$(INSTALL_BIN) ./files/usr/sbin/tw-time $(1)/usr/sbin/tw-time
 	$(INSTALL_BIN) ./files/usr/sbin/tw-portal $(1)/usr/sbin/tw-portal
 	$(INSTALL_BIN) ./files/usr/sbin/tw-wifi-qr $(1)/usr/sbin/tw-wifi-qr
 	$(INSTALL_DATA) ./files/usr/lib/travelwizard/common.sh $(1)/usr/lib/travelwizard/common.sh

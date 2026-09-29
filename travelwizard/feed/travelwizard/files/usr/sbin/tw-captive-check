@@ -3,27 +3,71 @@
 # Same idea as Android's connectivity check: a plain-HTTP 204 probe should
 # come back untouched. Prints JSON.
 # Usage: tw-captive-check
-. /usr/share/libubox/jshn.sh
-. /usr/lib/travelwizard/common.sh
+. "${TW_JSHN:-/usr/share/libubox/jshn.sh}"
+. "${TW_COMMON:-/usr/lib/travelwizard/common.sh}"
+
+CURL_BIN="${TW_CURL:-curl}"
 
 UPSTREAM=$(tw_upstream)
 [ -z "$UPSTREAM" ] && { echo '{"state":"offline","reason":"no upstream link"}'; exit 0; }
 DEV=$(tw_l3dev "$UPSTREAM")
 
+# Probes run until one proves real internet. Portal evidence (inline page,
+# redirect, HTTP 511) is kept but does not stop the run: a network that only
+# hijacks or filters one probe host must not read as captive while another
+# probe gets through. Transport/HTTP failures are collected per probe so an
+# offline result says what each probe hit.
 STATE="offline"
-LOGIN_URL=""
-DETAIL=""
+CAPTIVE_URL=""
+CAPTIVE_DETAIL=""
+FAILED_DETAIL=""
+FAILURE=""
+ANY_TIMEOUT=""
 
-# $1 url, $2 expected-body (optional)
+# Turn every useful Location form into an absolute HTTP(S) URL. Captive
+# gateways commonly return "/login" rather than a complete URL; handing that
+# straight to the browser would incorrectly open the path on this router.
+absolute_location() { # base location
+	local base="$1" loc="$2" scheme rest origin dir
+	case "$loc" in
+		http://*|https://*) printf '%s\n' "$loc" ;;
+		//*) scheme=${base%%://*}; printf '%s:%s\n' "$scheme" "$loc" ;;
+		/*)
+			scheme=${base%%://*}; rest=${base#*://}; origin=${rest%%/*}
+			printf '%s://%s%s\n' "$scheme" "$origin" "$loc"
+			;;
+		''|*[!A-Za-z0-9._~:/?#\[\]@!\$\&\'\(\)\*+,\;=%-]*) return 1 ;;
+		*) dir=${base%/*}; printf '%s/%s\n' "$dir" "$loc" ;;
+	esac
+}
+
+# $1 url, $2 expected-body (optional). Returns 0 on genuine internet only.
 probe() {
-	local hdr code loc body rc
-	hdr=$(curl -s -D - -o "$TMP_BODY" --max-time 8 \
-		${DEV:+--interface "$DEV"} "$1" 2>/dev/null)
+	local hdr code loc rc resolved host
+	host=${1#*://}; host=${host%%/*}
+	if [ -n "$DEV" ]; then
+		hdr=$("$CURL_BIN" -s -D - -o "$TMP_BODY" --max-time 8 \
+			--interface "$DEV" "$1" 2>/dev/null)
+	else
+		hdr=$("$CURL_BIN" -s -D - -o "$TMP_BODY" --max-time 8 \
+			"$1" 2>/dev/null)
+	fi
 	rc=$?
-	[ $rc -ne 0 ] && return 1
-	code=$(printf '%s\n' "$hdr" | head -n 1 | awk '{print $2}')
-	loc=$(printf '%s\n' "$hdr" | grep -i '^location:' | head -n 1 \
-		| tr -d '\r' | sed 's/^[Ll]ocation: *//')
+	if [ $rc -ne 0 ]; then
+		case "$rc" in
+			6) FAILURE="dns"; failed "$host" "DNS failed" ;;
+			7) FAILURE="connect"; failed "$host" "connection refused" ;;
+			28) FAILURE="timeout"; ANY_TIMEOUT=1; failed "$host" "timed out" ;;
+			*) FAILURE="transport"; failed "$host" "curl error $rc" ;;
+		esac
+		return 1
+	fi
+	code=$(printf '%s\n' "$hdr" | head -n 1 | awk '{print $2}' | tr -d '\r')
+	loc=$(printf '%s\n' "$hdr" | awk '
+		tolower($1) == "location:" {
+			sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit
+		}')
+	resolved=$(absolute_location "$1" "$loc" 2>/dev/null) || resolved=""
 	case "$code" in
 		204) return 0 ;; # genuine internet
 		200)
@@ -31,30 +75,54 @@ probe() {
 				return 0
 			fi
 			# 200 without the magic payload = portal page served inline.
-			STATE="captive"; LOGIN_URL="$1"
-			DETAIL="portal page served inline ($1)"
-			return 2
+			captive "$1" "portal page served inline ($1)"
 			;;
-		30*)
-			STATE="captive"
-			LOGIN_URL="${loc:-$1}"
-			DETAIL="redirect to $LOGIN_URL"
-			return 2
+		30[0-9]) captive "${resolved:-$1}" "sign-in redirect received (HTTP $code)" ;;
+		511)
+			# RFC 6585: the network requires authentication. A Location is
+			# optional; reopening the HTTP probe in a browser still gives the
+			# gateway a chance to render its login page or HTML refresh.
+			captive "${resolved:-$1}" "network authentication required (HTTP 511)"
 			;;
-		*) return 1 ;;
+		*) FAILURE="http"; failed "$host" "HTTP ${code:-unknown}" ;;
 	esac
+	return 1
+}
+
+# First portal answer wins; later ones only matter if no probe succeeds.
+captive() { # login-url detail
+	[ -n "$CAPTIVE_URL" ] && return
+	CAPTIVE_URL="$1"; CAPTIVE_DETAIL="$2"
+}
+failed() { # host words
+	FAILED_DETAIL="${FAILED_DETAIL:+$FAILED_DETAIL; }$1: $2"
 }
 
 TMP_BODY=$(mktemp)
 trap 'rm -f "$TMP_BODY"' EXIT
 
-probe "http://connectivitycheck.gstatic.com/generate_204" && STATE="online"
-if [ "$STATE" = "offline" ]; then
-	probe "http://captive.apple.com/hotspot-detect.html" "Success" && STATE="online"
-fi
-if [ "$STATE" = "offline" ]; then
-	probe "http://www.msftconnecttest.com/connecttest.txt" "Microsoft Connect Test" \
-		&& STATE="online"
+for spec in \
+	"http://connectivitycheck.gstatic.com/generate_204|" \
+	"http://captive.apple.com/hotspot-detect.html|Success" \
+	"http://www.msftconnecttest.com/connecttest.txt|Microsoft Connect Test" \
+	"http://connectivitycheck.platform.hicloud.com/generate_204|"; do
+	# The last one is a mainland-China-friendly 204 endpoint, kept as a
+	# fallback so the established Android/Apple/Windows probes go first.
+	probe "${spec%%|*}" "${spec#*|}" && { STATE="online"; break; }
+done
+
+LOGIN_URL=""
+DETAIL=""
+REASON=""
+if [ "$STATE" != "online" ]; then
+	if [ -n "$CAPTIVE_URL" ]; then
+		STATE="captive"; LOGIN_URL="$CAPTIVE_URL"; DETAIL="$CAPTIVE_DETAIL"
+	else
+		REASON="$FAILED_DETAIL"
+		# Any timeout means the path may be merely slow (crowded Wi-Fi),
+		# which is the case the UI's help text is written for.
+		[ -n "$ANY_TIMEOUT" ] && FAILURE="timeout"
+	fi
 fi
 
 json_init
@@ -62,4 +130,6 @@ json_add_string state "$STATE"
 json_add_string upstream "$UPSTREAM"
 [ -n "$LOGIN_URL" ] && json_add_string login_url "$LOGIN_URL"
 [ -n "$DETAIL" ] && json_add_string detail "$DETAIL"
+[ "$STATE" = "offline" ] && [ -n "$REASON" ] && json_add_string reason "$REASON"
+[ "$STATE" = "offline" ] && [ -n "$FAILURE" ] && json_add_string failure "$FAILURE"
 json_dump

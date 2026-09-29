@@ -69,7 +69,7 @@ align-items:center;gap:8px}
 .tw-col-4{grid-column:span 4}.tw-col-5{grid-column:span 5}.tw-col-7{grid-column:span 7}
 .tw-col-8{grid-column:span 8}.tw-col-12{grid-column:1/-1}
 .tw-card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;
-box-shadow:0 2px 4px rgba(24,37,63,.025)}
+box-shadow:0 2px 4px rgba(24,37,63,.025);min-width:0}
 .tw-card.tw-lift{box-shadow:var(--shadow)}
 .tw-card h2{font-size:20px;margin:0 0 5px;letter-spacing:-.02em}
 .tw-card h3{font-size:16px;margin:0}
@@ -161,12 +161,15 @@ border:2px solid rgba(128,128,128,.4);border-top-color:currentColor;animation:tw
 color:var(--muted);font:inherit;font-weight:750;cursor:pointer}
 .tw-choice button.is-active{background:#fff;color:var(--brand);box-shadow:0 2px 7px rgba(24,37,63,.09)}
 /* callouts + messages */
-.tw-callout{border-radius:13px;padding:13px 15px;background:#f4f6fa;color:#4c5970}
+.tw-callout{border-radius:13px;padding:13px 15px;background:#f4f6fa;color:#4c5970;
+	min-width:0;overflow-wrap:anywhere}
 .tw-callout strong{color:var(--ink)}
+.tw-portal-host{display:block;margin-top:5px;color:var(--muted);font-size:13px;
+	font-family:ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere}
 .tw-callout.is-good{background:var(--good-t);color:#176a4c}
 .tw-callout.is-warn{background:var(--warn-t);color:#835612}
 .tw-callout.is-bad{background:var(--bad-t);color:#9c3139}
-.tw-message{min-height:20px;font-size:13px;margin:10px 0 0}
+.tw-message{min-height:20px;font-size:13px;margin:10px 0 0;overflow-wrap:anywhere}
 .tw-good{color:var(--good);font-weight:750}
 .tw-warn{color:var(--warn);font-weight:750}
 .tw-bad{color:var(--bad);font-weight:750}
@@ -174,7 +177,7 @@ ol.tw-steps{margin:12px 0 0;padding-left:1.4em;display:grid;gap:.45em;color:#4c5
 details.tw-tech{margin-top:10px}
 details.tw-tech summary{cursor:pointer;color:var(--muted);font-size:13px;min-height:34px;
 display:flex;align-items:center}
-details.tw-tech p{font-size:13px;margin:4px 0 0}
+details.tw-tech p{font-size:13px;margin:4px 0 0;overflow-wrap:anywhere}
 /* lists: networks, profiles, endpoints */
 .tw-network-list,.tw-profile-list,.tw-endpoints{display:grid;gap:9px}
 .tw-network,.tw-profile,.tw-endpoint{border:1px solid var(--line);border-radius:13px;padding:13px;
@@ -334,6 +337,7 @@ border-radius:14px;padding:8px 8px 8px 16px;box-shadow:var(--shadow);font-weight
 		<button type="button" role="tab" data-panel="internet" id="nav-internet" aria-selected="false"><span class="tw-dot"></span><%:Internet%></button>
 		<button type="button" role="tab" data-panel="privacy" id="nav-privacy" aria-selected="false"><span class="tw-dot"></span><%:Privacy%></button>
 		<button type="button" role="tab" data-panel="wifi" id="nav-wifi" aria-selected="false"><span class="tw-dot"></span><%:Wi-Fi%></button>
+		<button type="button" role="tab" data-panel="settings" id="nav-settings" aria-selected="false"><span class="tw-dot"></span><%:Settings%></button>
 	</nav>
 	<main>
 
@@ -411,10 +415,16 @@ border-radius:14px;padding:8px 8px 8px 16px;box-shadow:var(--shadow);font-weight
 					<li><%:Tap%> <b><%:Open sign-in page%></b> <%:and finish the hotel’s page.%></li>
 					<li><%:Come back here — this page notices by itself when you are online.%></li>
 				</ol>
+				<ol class="tw-steps" id="offline-steps" hidden>
+					<li><%:Busy hotspots can take a little while. Wait briefly, then tap Check again.%></li>
+					<li><%:Try opening the sign-in page directly — the hotspot may intercept it even when the router’s check timed out.%></li>
+					<li><%:If it still does not appear, disconnect and reconnect the hotel Wi-Fi, or move the router closer to its access point.%></li>
+				</ol>
 				<div class="tw-row tw-mt">
 					<a class="tw-button tw-button-primary" id="btn-portal" hidden target="_blank" rel="noopener"><%:Open sign-in page%> ↗</a>
 					<button class="tw-button" type="button" id="btn-recheck"><%:Check again%></button>
 				</div>
+				<details class="tw-tech" id="captive-tech" hidden><summary><%:Technical detail%></summary><p class="tw-muted" id="captive-tech-text"></p></details>
 			</div>
 			<div class="tw-card tw-col-12" id="card-networks">
 				<div class="tw-card-header">
@@ -578,6 +588,28 @@ border-radius:14px;padding:8px 8px 8px 16px;box-shadow:var(--shadow);font-weight
 		</div>
 	</section>
 
+	<section class="tw-panel" data-view="settings" hidden>
+		<div class="tw-section-title"><h2><%:Router settings%></h2><p><%:Maintenance tools for this travel router.%></p></div>
+		<div class="tw-grid">
+			<div class="tw-card tw-col-12" id="card-time">
+				<div class="tw-card-header"><div><h2><%:Date and time%></h2>
+					<p><%:The router has no battery-backed clock. Hotel sign-in pages can prevent internet time from working immediately after startup.%></p></div></div>
+				<div class="tw-health-grid">
+					<div class="tw-health-item"><small><%:Router time%></small><strong id="router-time">—</strong></div>
+					<div class="tw-health-item"><small><%:This device%></small><strong id="device-time">—</strong></div>
+					<div class="tw-health-item"><small><%:Router timezone%></small><strong id="router-timezone">—</strong></div>
+				</div>
+				<div class="tw-callout tw-mt" id="time-status"><%:Checking the clock…%></div>
+				<div class="tw-row tw-mt">
+					<button class="tw-button tw-button-primary" type="button" id="btn-time-device"><%:Set from this device%></button>
+					<button class="tw-button" type="button" id="btn-time-sync"><%:Retry internet time%></button>
+				</div>
+				<p class="tw-message" id="time-msg" aria-live="polite"></p>
+				<p class="tw-muted"><%:Times above are shown in this device’s timezone. Finish any hotel sign-in first, then retry internet time. “Set from this device” is the fallback when NTP is unavailable.%></p>
+			</div>
+		</div>
+	</section>
+
 	</main>
 </div>
 <div id="toast" class="tw-toast" role="status" hidden></div>
@@ -607,6 +639,7 @@ var TOKEN = '<%=token%>';
 var CNA_MODE = (location.hash || '').indexOf('cna') >= 0 ||
 	/CaptiveNetworkSupport|wispr/i.test(navigator.userAgent || '');
 var SETUP_URL = 'http://secure.router';
+var CAPTIVE_FALLBACK_URL = 'http://captive.apple.com/hotspot-detect.html';
 /* every call resolves to an object: transport and HTTP failures come back
  * as { error: ... }, so callers only ever check j.error */
 function post(path, data) {
@@ -790,6 +823,7 @@ function showPanel(name, focus) {
 		refreshQr();
 		loadLanStatus();
 	}
+	if (name === 'settings') loadTime();
 }
 all('[data-panel]').forEach(function(b) {
 	b.addEventListener('click', function() { showPanel(b.getAttribute('data-panel')); });
@@ -1385,20 +1419,45 @@ function rejoinSaved(ssid, band, btn) {
 }
 
 /* ---- internet: hotel sign-in (captive portal) ---- */
-var CAPTIVE_TIMER = null;
+var CAPTIVE_TIMER = null, CAPTIVE_BUSY = false, CAPTIVE_AGAIN = false;
+var CAPTIVE_RETRY_MS = 0;
 function checkCaptive(btn) {
+	/* one background check at a time: an all-timeout run takes ~30 s. A
+	 * request made meanwhile (e.g. after a join) runs once it finishes, so
+	 * a stale result from the previous link is never the last word. */
+	if (CAPTIVE_BUSY && !btn) { CAPTIVE_AGAIN = true; return Promise.resolve({ busy: true }); }
+	CAPTIVE_BUSY = true;
 	var p = post('/captive', {});
 	return (btn ? withBusy(btn, p) : p).then(function(j) {
+		CAPTIVE_BUSY = false;
+		if (CAPTIVE_AGAIN) { CAPTIVE_AGAIN = false; checkCaptive(); }
 		if (!j.error) showCaptive(j);
+		/* a failed request keeps the last result; keep watching so one
+		 * blip (session hiccup, router busy) does not freeze the panel */
+		else armCaptive(CAPTIVE_RETRY_MS);
+		return j;
 	});
+}
+function armCaptive(ms) {
+	if (CAPTIVE_TIMER) { clearTimeout(CAPTIVE_TIMER); CAPTIVE_TIMER = null; }
+	CAPTIVE_RETRY_MS = ms;
+	if (ms)
+		CAPTIVE_TIMER = setTimeout(function() {
+			CAPTIVE_TIMER = null;
+			if (!document.hidden) checkCaptive();
+		}, ms);
 }
 function showCaptive(j) {
 	var box = el('net-status'), badge = el('captive-badge'), portal = el('btn-portal');
+	var hasUpstream = !!j.upstream;
 	STATE.net = j.state || 'offline';
 	STATE.loginUrl = j.login_url || '';
 	box.className = 'tw-callout';
 	portal.hidden = true;
+	portal.textContent = '<%:Open sign-in page%> ↗';
 	el('hotel-steps').hidden = STATE.net !== 'captive';
+	el('offline-steps').hidden = true;
+	el('captive-tech').hidden = true;
 	if (STATE.net === 'online') {
 		box.classList.add('is-good');
 		box.innerHTML = '<strong><%:You are online.%></strong> <%:No sign-in needed.%> ' +
@@ -1407,24 +1466,46 @@ function showCaptive(j) {
 		setKind(badge, 'good');
 	} else if (STATE.net === 'captive') {
 		box.classList.add('is-warn');
-		box.innerHTML = '<strong><%:This Wi-Fi needs a sign-in.%></strong> ' + esc(j.detail || '');
+		var portalHost = '';
+		/* Keep long, token-bearing redirect URLs in href only. The host gives
+		 * useful context without stretching the card or exposing the token. */
+		if ((j.detail || '').indexOf('redirect') >= 0 && j.login_url) {
+			try { portalHost = new URL(j.login_url, location.href).hostname; } catch (e) {}
+		}
+		box.innerHTML = '<strong><%:This Wi-Fi needs a sign-in.%></strong> ' +
+			'<%:Open the hotspot’s page to continue.%>' +
+			(portalHost ? '<span class="tw-portal-host"><%:Sign-in service:%> ' + esc(portalHost) + '</span>' : '');
 		portal.href = j.login_url || '#';
 		portal.hidden = !j.login_url;
 		badge.textContent = '<%:Sign in%>';
 		setKind(badge, 'warn');
 	} else {
 		box.classList.add('is-bad');
-		box.innerHTML = '<strong><%:No internet yet.%></strong> ' + esc(j.reason || j.state || '');
+		var help = !hasUpstream
+			? '<%:Connect the router to hotel Wi-Fi or an Ethernet cable first.%>'
+			: j.failure === 'timeout'
+			? '<%:The hotspot took too long to answer. It may be busy or waiting for a sign-in.%>'
+			: j.failure === 'dns'
+				? '<%:The hotspot’s address lookup did not answer. It may still be starting or overloaded.%>'
+				: '<%:The router joined the network, but internet access did not answer yet.%>';
+		box.innerHTML = '<strong><%:No internet yet.%></strong> ' + help;
 		badge.textContent = '<%:Offline%>';
 		setKind(badge, 'bad');
+		if (hasUpstream) {
+			el('offline-steps').hidden = false;
+			portal.href = CAPTIVE_FALLBACK_URL;
+			portal.textContent = '<%:Try sign-in page%> ↗';
+			portal.hidden = false;
+		}
+		if (j.reason) {
+			el('captive-tech-text').textContent = j.reason;
+			el('captive-tech').hidden = false;
+		}
 	}
-	/* keep watching while the user signs in on another tab or device */
-	if (CAPTIVE_TIMER) { clearTimeout(CAPTIVE_TIMER); CAPTIVE_TIMER = null; }
-	if (STATE.net === 'captive')
-		CAPTIVE_TIMER = setTimeout(function() {
-			CAPTIVE_TIMER = null;
-			if (!document.hidden) checkCaptive();
-		}, 15000);
+	/* Keep watching while the user signs in. Also retry an ambiguous offline
+	 * result: a busy hotspot may answer the next probe without intervention. */
+	armCaptive(STATE.net === 'captive' ? 15000
+		: STATE.net === 'offline' && hasUpstream ? 30000 : 0);
 	updateOverview();
 	cnaOnline();
 }
@@ -1509,7 +1590,8 @@ el('cna-later').addEventListener('click', function(ev) {
 el('btn-recheck').addEventListener('click', function() { checkCaptive(el('btn-recheck')); });
 /* back from the sign-in tab: check at once instead of waiting for the timer */
 document.addEventListener('visibilitychange', function() {
-	if (!document.hidden && STATE.net === 'captive') checkCaptive();
+	if (!document.hidden && (STATE.net === 'captive' || (STATE.net === 'offline' && STATE.up)))
+		checkCaptive();
 });
 
 /* ---- privacy: tunnel health, verdict first, tech details folded away ---- */
@@ -2120,6 +2202,66 @@ function refreshQr() {
 	});
 }
 
+/* ---- router clock: NTP normally owns it; the browser is the captive fallback ---- */
+function clockText(epoch) {
+	var n = Number(epoch);
+	if (!isFinite(n) || n <= 0) return '—';
+	return new Date(n * 1000).toLocaleString();
+}
+function clockGap(seconds) {
+	seconds = Math.round(Math.abs(seconds));
+	if (seconds >= 86400) return Math.round(seconds / 86400) + ' <%:days%>';
+	if (seconds >= 3600) return Math.round(seconds / 3600) + ' <%:hours%>';
+	return Math.max(1, Math.round(seconds / 60)) + ' <%:minutes%>';
+}
+function paintTime(j) {
+	el('device-time').textContent = clockText(Date.now() / 1000);
+	if (!j || j.error) {
+		el('router-time').textContent = '—';
+		el('router-timezone').textContent = '—';
+		el('time-status').textContent = errMsg(j);
+		setKind(el('time-status'), 'bad');
+		return false;
+	}
+	el('router-time').textContent = clockText(j.epoch);
+	el('router-timezone').textContent = j.timezone || 'UTC';
+	var drift = Number(j.epoch) - Date.now() / 1000;
+	if (Math.abs(drift) <= 300) {
+		el('time-status').textContent = '<%:The router clock matches this device.%>';
+		setKind(el('time-status'), 'good');
+	} else {
+		el('time-status').textContent = '<%:The router clock differs from this device by about%> ' +
+			clockGap(drift) + '. <%:This can prevent secure websites and VPN connections.%>';
+		setKind(el('time-status'), 'warn');
+	}
+	return true;
+}
+function loadTime() {
+	return post('/time', { action: 'status' }).then(function(j) { paintTime(j); return j; });
+}
+el('btn-time-device').addEventListener('click', function() {
+	var btn = el('btn-time-device');
+	note('time-msg', '<%:Setting the router clock…%>');
+	withBusy(btn, post('/time', {
+		action: 'set', epoch: String(Math.floor(Date.now() / 1000))
+	}), true).then(function(j) {
+		if (j.error) { note('time-msg', errMsg(j), 'bad'); paintTime(j); return; }
+		paintTime(j);
+		note('time-msg', '<%:Router time updated from this device.%>', 'good');
+	});
+});
+el('btn-time-sync').addEventListener('click', function() {
+	var btn = el('btn-time-sync');
+	note('time-msg', '<%:Restarting internet time…%>');
+	withBusy(btn, post('/time', { action: 'sync' }), true).then(function(j) {
+		if (j.error) { note('time-msg', errMsg(j), 'bad'); return; }
+		paintTime(j);
+		note('time-msg', '<%:Internet time requested. Checking again shortly…%>');
+		setTimeout(loadTime, 2500);
+		setTimeout(loadTime, 7000);
+	});
+});
+
 function refreshAll() {
 	refreshUpstream();
 	checkCaptive();
@@ -2128,6 +2270,7 @@ function refreshAll() {
 	refreshSaved();
 	loadWifi();
 	loadLanStatus();
+	loadTime();
 }
 updateOverview();
 refreshAll();
