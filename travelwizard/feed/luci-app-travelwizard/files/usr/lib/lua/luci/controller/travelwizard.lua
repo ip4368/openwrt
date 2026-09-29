@@ -30,10 +30,13 @@ function index()
 	entry({ "admin", "travelwizard", "api", "wlan_saved" }, post("api_wlan_saved")).leaf = true
 	entry({ "admin", "travelwizard", "api", "wlan_rejoin" }, post("api_wlan_rejoin")).leaf = true
 	entry({ "admin", "travelwizard", "api", "wlan_forget" }, post("api_wlan_forget")).leaf = true
+	entry({ "admin", "travelwizard", "api", "wlan_privacy" }, post("api_wlan_privacy")).leaf = true
 	entry({ "admin", "travelwizard", "api", "wlan_disconnect" }, post("api_wlan_disconnect")).leaf = true
 	entry({ "admin", "travelwizard", "api", "wifi_qr" }, post("api_wifi_qr")).leaf = true
 	entry({ "admin", "travelwizard", "api", "lan_status" }, post("api_lan_status")).leaf = true
 	entry({ "admin", "travelwizard", "api", "time" }, post("api_time")).leaf = true
+	entry({ "admin", "travelwizard", "api", "privacy_get" }, post("api_privacy_get")).leaf = true
+	entry({ "admin", "travelwizard", "api", "privacy_set" }, post("api_privacy_set")).leaf = true
 end
 
 local function run_json(cmd)
@@ -120,12 +123,63 @@ function api_time()
 	http.write('{"error":"bad time action"}')
 end
 
+local function valid_upstream_hostname(value)
+	if value == "*" then return true end
+	if #value < 1 or #value > 63 or value:find("..", 1, true) then return false end
+	if not value:match("^[A-Za-z0-9][A-Za-z0-9.%-]*[A-Za-z0-9]$") then
+		return #value == 1 and value:match("^[A-Za-z0-9]$") ~= nil
+	end
+	for label in value:gmatch("[^.]+") do
+		if label:sub(1, 1) == "-" or label:sub(-1) == "-" then return false end
+	end
+	return true
+end
+
+function api_privacy_get()
+	local hostname = uci:get("travelwizard", "main", "upstream_hostname") or "*"
+	http.prepare_content("application/json")
+	http.write_json({
+		per_network_mac = uci:get("travelwizard", "main", "per_network_mac") ~= "0",
+		upstream_hostname = hostname == "*" and "" or hostname,
+		suppress_client_id = uci:get("travelwizard", "main", "suppress_client_id") ~= "0"
+	})
+end
+
+function api_privacy_set()
+	local private_mac = http.formvalue("per_network_mac") or ""
+	local client_id = http.formvalue("suppress_client_id") or ""
+	local hostname = http.formvalue("upstream_hostname") or ""
+	hostname = hostname:match("^%s*(.-)%s*$") or ""
+	http.prepare_content("application/json")
+	if (private_mac ~= "0" and private_mac ~= "1")
+		or (client_id ~= "0" and client_id ~= "1") then
+		http.write('{"error":"invalid privacy setting"}')
+		return
+	end
+	if hostname == "" then hostname = "*" end
+	if not valid_upstream_hostname(hostname) then
+		http.write('{"error":"hostname must contain only letters, numbers, dots, or hyphens"}')
+		return
+	end
+	uci:set("travelwizard", "main", "per_network_mac", private_mac)
+	uci:set("travelwizard", "main", "upstream_hostname", hostname)
+	uci:set("travelwizard", "main", "suppress_client_id", client_id)
+	uci:commit("travelwizard")
+	local out = util.exec("/usr/sbin/tw-uplink-privacy --defer-restart")
+	http.write(out and #out > 0 and out or '{"error":"apply failed"}')
+end
+
 -- Saved upstream networks (SSID + metadata only; keys stay on the router).
 function api_wlan_saved()
 	local out = {}
+	local default_mac = uci:get("travelwizard", "main", "per_network_mac") ~= "0"
 	uci:foreach("travelwizard", "savednet", function(s)
+		local private_mac = default_mac
+		if s.private_mac == "0" then private_mac = false
+		elseif s.private_mac == "1" then private_mac = true end
 		out[#out + 1] = { ssid = s.ssid, band = s.band,
-			last_used = tonumber(s.last_used) or 0 }
+			last_used = tonumber(s.last_used) or 0,
+			private_mac = private_mac, macaddr = s.macaddr or "" }
 	end)
 	table.sort(out, function(a, b) return a.last_used > b.last_used end)
 	http.prepare_content("application/json")
@@ -192,6 +246,63 @@ function api_wlan_forget()
 	end
 	uci:commit("travelwizard")
 	http.write_json({ forgotten = ssid })
+end
+
+-- Set one remembered network's MAC policy. A stored private address is kept
+-- while disabled, so turning protection back on restores the same identity.
+local function valid_private_mac(value)
+	return value ~= nil and value:match(
+		"^[0-9A-Fa-f][26AaEe]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]$") ~= nil
+end
+
+local function generate_private_mac()
+	local value = util.exec(". /usr/lib/travelwizard/common.sh; tw_mac_generate_unique") or ""
+	value = value:match("^%s*(.-)%s*$") or ""
+	if valid_private_mac(value) then return value:lower() end
+	return nil
+end
+
+function api_wlan_privacy()
+	local ssid = http.formvalue("ssid") or ""
+	local action = http.formvalue("action") or ""
+	http.prepare_content("application/json")
+	if ssid == "" then
+		http.write('{"error":"missing ssid"}')
+		return
+	end
+	if action ~= "private" and action ~= "hardware" and action ~= "randomize" then
+		http.write('{"error":"invalid MAC setting"}')
+		return
+	end
+	local section = nil
+	uci:foreach("travelwizard", "savednet", function(s)
+		if s.ssid == ssid then section = s[".name"] end
+	end)
+	if section == nil then
+		http.write('{"error":"unknown network"}')
+		return
+	end
+	local private_mac = action == "hardware" and "0" or "1"
+	local macaddr = uci:get("travelwizard", section, "macaddr") or ""
+	if private_mac == "1" and (action == "randomize" or not valid_private_mac(macaddr)) then
+		macaddr = generate_private_mac()
+		if macaddr == nil then
+			http.write('{"error":"could not create private Wi-Fi identity"}')
+			return
+		end
+		uci:set("travelwizard", section, "macaddr", macaddr)
+	end
+	uci:set("travelwizard", section, "private_mac", private_mac)
+	uci:commit("travelwizard")
+	local out = util.exec("/usr/sbin/tw-uplink-privacy --defer-restart")
+	if not out or #out == 0 then
+		http.write('{"error":"apply failed"}')
+	elseif out:find('"error"', 1, true) then
+		http.write(out)
+	else
+		http.write_json({ saved = true, private_mac = private_mac == "1",
+			macaddr = private_mac == "1" and macaddr or "" })
+	end
 end
 
 function api_health()

@@ -296,6 +296,158 @@ tw_ns_answer() {
 		want && $1 == "Address" && $3 !~ /:/ && $3 !~ /#/ && $3 !~ /^127\./ { print $3; exit }'
 }
 
+# True when a MAC is syntactically valid, locally administered, and unicast.
+# Keeping this check here prevents a damaged saved profile from being copied
+# into netifd and silently breaking the next association.
+tw_mac_is_local_unicast() {
+	local mac="$1" hex first
+	case "$mac" in
+		??:??:??:??:??:??) ;;
+		*) return 1 ;;
+	esac
+	hex=${mac//:/}
+	case "$hex" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
+	[ "${#hex}" -eq 12 ] || return 1
+	first=${mac%%:*}
+	[ $((0x$first & 3)) -eq 2 ]
+}
+
+tw_mac_normalize() {
+	tw_mac_is_local_unicast "$1" || return 1
+	printf '%s\n' "$1" | tr 'A-F' 'a-f'
+}
+
+# Print the default private-MAC mode for newly remembered networks.
+tw_private_mac_default() {
+	[ "$(uci -q get travelwizard.main.per_network_mac)" = "0" ] \
+		&& printf '%s\n' 0 || printf '%s\n' 1
+}
+
+# True when private addressing is enabled for an SSID. A saved-network
+# override wins; profiles created before this option inherit the global
+# default until the upgrade migration or next successful save persists it.
+tw_private_mac_enabled() {
+	local ssid="$1" s mode=""
+	if [ -n "$ssid" ]; then
+		for s in $(uci show travelwizard 2>/dev/null \
+			| sed -n 's/^travelwizard\.\([^.]*\)=savednet/\1/p'); do
+			if [ "$(uci -q get "travelwizard.$s.ssid")" = "$ssid" ]; then
+				mode=$(uci -q get "travelwizard.$s.private_mac")
+			fi
+		done
+	fi
+	case "$mode" in 0|1) ;; *) mode=$(tw_private_mac_default) ;; esac
+	[ "$mode" = "1" ]
+}
+
+tw_client_id_suppressed() {
+	[ "$(uci -q get travelwizard.main.suppress_client_id)" != "0" ]
+}
+
+# Print the DHCP hostname to configure on both upstreams. In netifd, '*'
+# suppresses option 12 rather than falling back to the kernel hostname.
+tw_upstream_hostname_want() {
+	local want
+	want=$(uci -q get travelwizard.main.upstream_hostname)
+	[ -n "$want" ] || want='*'
+	[ "$want" = "*" ] && { printf '%s\n' '*'; return 0; }
+	[ "${#want}" -le 63 ] || { printf '%s\n' '*'; return 0; }
+	case "$want" in
+		*[!A-Za-z0-9.-]*|.*|*.|*-|-*|*..*|*.-*|*-.*) printf '%s\n' '*' ;;
+		*) printf '%s\n' "$want" ;;
+	esac
+}
+
+# Stage hostname/client-ID policy on both DHCPv4 uplinks. Returns success when
+# UCI changed, allowing callers to avoid unnecessary commits and reconnects.
+tw_apply_uplink_privacy() {
+	local iface want current changed=1
+	want=$(tw_upstream_hostname_want)
+	for iface in wan wwan; do
+		uci -q get "network.$iface" >/dev/null 2>&1 || continue
+		current=$(uci -q get "network.$iface.hostname")
+		if [ "$current" != "$want" ]; then
+			uci set "network.$iface.hostname=$want"
+			changed=0
+		fi
+		current=$(uci -q get "network.$iface.sendclientid")
+		if tw_client_id_suppressed; then
+			if [ "$current" != "none" ]; then
+				uci set "network.$iface.sendclientid=none"
+				changed=0
+			fi
+		elif [ -n "$current" ]; then
+			uci -q delete "network.$iface.sendclientid"
+			changed=0
+		fi
+	done
+	return $changed
+}
+
+# Generate a fresh locally administered unicast MAC. Kept as a separate
+# helper so the profile logic can be tested with a deterministic generator.
+tw_mac_random() {
+	local first system_functions="${TW_SYSTEM_FUNCTIONS:-/lib/functions/system.sh}"
+	if [ -r "$system_functions" ]; then
+		. "$system_functions"
+		macaddr_random
+		return
+	fi
+	# Host-test fallback; production OpenWrt provides macaddr_random above.
+	set -- $(od -An -N6 -tx1 /dev/urandom 2>/dev/null)
+	[ "$#" -eq 6 ] || return 1
+	first=$(( (0x$1 | 2) & 254 ))
+	printf '%02x:%s:%s:%s:%s:%s\n' "$first" "$2" "$3" "$4" "$5" "$6"
+}
+
+_tw_mac_in_use() {
+	local want s got address sysfs="${TW_SYS_CLASS_NET:-/sys/class/net}"
+	want=$(tw_mac_normalize "$1") || return 0
+	for s in $(uci show travelwizard 2>/dev/null \
+		| sed -n 's/^travelwizard\.\([^.]*\)=savednet/\1/p'); do
+		got=$(tw_mac_normalize "$(uci -q get "travelwizard.$s.macaddr")" 2>/dev/null) || continue
+		[ "$got" = "$want" ] && return 0
+	done
+	for address in "$sysfs"/*/address; do
+		[ -r "$address" ] || continue
+		got=$(tr 'A-F' 'a-f' <"$address" 2>/dev/null)
+		[ "$got" = "$want" ] && return 0
+	done
+	return 1
+}
+
+tw_mac_generate_unique() {
+	local mac tries=0
+	while [ "$tries" -lt 16 ]; do
+		mac=$(tw_mac_random) || return 1
+		if tw_mac_is_local_unicast "$mac" && ! _tw_mac_in_use "$mac"; then
+			tw_mac_normalize "$mac"
+			return 0
+		fi
+		tries=$((tries + 1))
+	done
+	return 1
+}
+
+# Return the stable private MAC for a saved SSID. Legacy/new profiles without
+# one get a candidate which tw_saved_upsert persists after the link succeeds.
+tw_saved_mac_for_ssid() {
+	local ssid="$1" s mac=""
+	[ -n "$ssid" ] || return 1
+	tw_private_mac_enabled "$ssid" || return 0
+	for s in $(uci show travelwizard 2>/dev/null \
+		| sed -n 's/^travelwizard\.\([^.]*\)=savednet/\1/p'); do
+		if [ "$(uci -q get "travelwizard.$s.ssid")" = "$ssid" ]; then
+			mac=$(uci -q get "travelwizard.$s.macaddr")
+		fi
+	done
+	if tw_mac_is_local_unicast "$mac"; then
+		tw_mac_normalize "$mac"
+	else
+		tw_mac_generate_unique
+	fi
+}
+
 # Print the oldest savednet section name (by last_used), or nothing.
 _tw_saved_oldest() {
 	local s ts best="" best_ts=""
@@ -314,8 +466,8 @@ _tw_saved_oldest() {
 # Updates the entry when the SSID is already known, else adds one (capped
 # at 16 entries, oldest first out). Silent; the caller commits.
 tw_saved_upsert() {
-	local ssid="$1" key="$2" band="$3" enc="$4" bssid="$5"
-	local s sec="" count=0 oldest now
+	local ssid="$1" key="$2" band="$3" enc="$4" bssid="$5" requested_mac="$6"
+	local s sec="" count=0 oldest now stored_mac macaddr private_mac
 	[ -n "$ssid" ] || return 1
 	now=$(date +%s)
 	for s in $(uci show travelwizard 2>/dev/null \
@@ -335,11 +487,25 @@ tw_saved_upsert() {
 		sec=$(uci add travelwizard savednet)
 		[ -n "$sec" ] || return 1
 	fi
+	private_mac=$(uci -q get "travelwizard.$sec.private_mac")
+	case "$private_mac" in 0|1) ;; *) private_mac=$(tw_private_mac_default) ;; esac
+	stored_mac=$(uci -q get "travelwizard.$sec.macaddr")
+	if [ "$private_mac" = "1" ]; then
+		if tw_mac_is_local_unicast "$stored_mac"; then
+			macaddr=$(tw_mac_normalize "$stored_mac")
+		elif tw_mac_is_local_unicast "$requested_mac"; then
+			macaddr=$(tw_mac_normalize "$requested_mac")
+		else
+			macaddr=$(tw_mac_generate_unique) || return 1
+		fi
+	fi
 	uci set "travelwizard.$sec.ssid=$ssid"
 	uci set "travelwizard.$sec.key=$key"
 	uci set "travelwizard.$sec.band=$band"
 	uci set "travelwizard.$sec.enc=$enc"
 	uci set "travelwizard.$sec.bssid=$bssid"
+	uci set "travelwizard.$sec.private_mac=$private_mac"
+	[ -n "$macaddr" ] && uci set "travelwizard.$sec.macaddr=$macaddr"
 	uci set "travelwizard.$sec.last_used=$now"
 	return 0
 }
@@ -351,22 +517,40 @@ tw_saved_upsert() {
 # scan-derived settings and only take the key that just worked and a fresh
 # timestamp. Silent; the caller commits.
 tw_saved_record_wwan() {
-	local ssid key enc radio s sec=""
+	local ssid key enc radio macaddr stored_mac private_mac s sec=""
 	ssid=$(uci -q get wireless.wwan.ssid)
 	[ -n "$ssid" ] || return 1
 	key=$(uci -q get wireless.wwan.key)
+	macaddr=$(uci -q get wireless.wwan.macaddr)
 	for s in $(uci show travelwizard 2>/dev/null \
 		| sed -n 's/^travelwizard\.\([^.]*\)=savednet/\1/p'); do
 		[ "$(uci -q get "travelwizard.$s.ssid")" = "$ssid" ] && sec="$s"
 	done
 	if [ -n "$sec" ]; then
+		private_mac=$(uci -q get "travelwizard.$sec.private_mac")
+		case "$private_mac" in 0|1) ;; *) private_mac=$(tw_private_mac_default) ;; esac
+		uci set "travelwizard.$sec.private_mac=$private_mac"
+		if [ "$private_mac" = "0" ]; then
+			uci set "travelwizard.$sec.key=$key"
+			uci set "travelwizard.$sec.last_used=$(date +%s)"
+			return 0
+		fi
+		stored_mac=$(uci -q get "travelwizard.$sec.macaddr")
+		if tw_mac_is_local_unicast "$stored_mac"; then
+			macaddr=$(tw_mac_normalize "$stored_mac")
+		elif tw_mac_is_local_unicast "$macaddr"; then
+			macaddr=$(tw_mac_normalize "$macaddr")
+		else
+			macaddr=$(tw_mac_generate_unique) || return 1
+		fi
 		uci set "travelwizard.$sec.key=$key"
+		uci set "travelwizard.$sec.macaddr=$macaddr"
 		uci set "travelwizard.$sec.last_used=$(date +%s)"
 		return 0
 	fi
 	enc=$(uci -q get wireless.wwan.encryption)
 	radio=$(uci -q get wireless.wwan.device)
-	tw_saved_upsert "$ssid" "$key" "$(uci -q get "wireless.$radio.band")" "${enc:-none}" ""
+	tw_saved_upsert "$ssid" "$key" "$(uci -q get "wireless.$radio.band")" "${enc:-none}" "" "$macaddr"
 }
 
 # True when a default route via the given device exists in some table.

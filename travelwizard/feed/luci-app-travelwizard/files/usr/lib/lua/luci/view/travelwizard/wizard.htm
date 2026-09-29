@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <!-- TravelWizard app: a standalone page (no LuCI chrome) behind LuCI auth.
      Overview shows what is ready plus the one next step; the Internet,
-     Privacy and Wi-Fi tabs hold the settings. -->
+     Privacy, Wi-Fi and Settings tabs hold the configuration. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -212,9 +212,16 @@ justify-content:space-between;gap:12px}
 .tw-sub-title{min-width:0}
 .tw-sub-title strong{display:block;font-size:15px}
 .tw-sub-title small{display:block;color:var(--muted);margin-top:2px}
-.tw-sub-chevron{color:var(--muted);transition:transform .15s}
-.tw-sub-group[open] .tw-sub-chevron{transform:rotate(180deg)}
+.tw-sub-chevron{display:block;width:7px;height:7px;box-sizing:border-box;flex:0 0 auto;
+border-right:2px solid currentColor;border-bottom:2px solid currentColor;color:var(--muted);
+transform:rotate(45deg);transition:transform .15s}
+.tw-sub-group[open] .tw-sub-chevron{transform:rotate(225deg)}
 .tw-sub-body{padding:0 16px 16px;border-top:1px solid var(--line)}
+.tw-saved-network.is-active{border-color:#8bd2b8;background:#f1fbf6}
+.tw-saved-network summary{padding:13px}
+.tw-saved-network .tw-sub-body{padding:12px 13px 13px}
+.tw-saved-network .tw-sub-body p{margin:0 0 10px}
+.tw-saved-state{display:flex;align-items:center;gap:8px;flex-shrink:0}
 .tw-saved-away{margin-top:9px}
 .tw-saved-away summary{padding:12px 14px}
 .tw-saved-away .tw-sub-body{padding:12px 14px 14px}
@@ -441,7 +448,7 @@ border-radius:14px;padding:8px 8px 8px 16px;box-shadow:var(--shadow);font-weight
 				<div class="tw-list-heading"><h3><%:Remembered networks%></h3><small><%:In range now — reconnect without typing the password again.%></small></div>
 				<div class="tw-network-list" id="saved-list"><div class="tw-empty"><%:Loading remembered networks…%></div></div>
 				<details class="tw-sub-group tw-saved-away" id="saved-away" hidden>
-					<summary><span class="tw-sub-title"><strong><%:Not nearby%> (<span id="saved-away-count">0</span>)</strong><small><%:Remembered, but the last scan did not find them.%></small></span><span class="tw-sub-chevron" aria-hidden="true">⌄</span></summary>
+					<summary><span class="tw-sub-title"><strong><%:Not nearby%> (<span id="saved-away-count">0</span>)</strong><small><%:Remembered, but the last scan did not find them.%></small></span><span class="tw-sub-chevron" aria-hidden="true"></span></summary>
 					<div class="tw-sub-body"><div class="tw-network-list" id="saved-away-list"></div></div>
 				</details>
 				<div class="tw-list-heading"><h3><%:Nearby networks%></h3><small><%:Choose a network to use it for internet.%></small></div>
@@ -589,8 +596,35 @@ border-radius:14px;padding:8px 8px 8px 16px;box-shadow:var(--shadow);font-weight
 	</section>
 
 	<section class="tw-panel" data-view="settings" hidden>
-		<div class="tw-section-title"><h2><%:Router settings%></h2><p><%:Maintenance tools for this travel router.%></p></div>
+		<div class="tw-section-title"><h2><%:Router settings%></h2><p><%:Privacy and maintenance controls for this travel router.%></p></div>
 		<div class="tw-grid">
+			<div class="tw-card tw-col-12" id="card-uplink-privacy">
+				<div class="tw-card-header"><div><h2><%:Upstream identity%></h2>
+					<p><%:Control what hotels and other upstream networks see when this router connects.%></p></div></div>
+				<div class="tw-form-grid">
+					<div class="tw-field"><label for="privacy-mac"><%:Default Wi-Fi address for new networks%></label>
+						<select id="privacy-mac">
+							<option value="1"><%:Private address per remembered network%></option>
+							<option value="0"><%:Hardware address%></option>
+						</select>
+						<small class="tw-muted"><%:Existing remembered networks keep their own choice in the Internet tab. Forgetting one rotates its saved private address.%></small>
+					</div>
+					<div class="tw-field"><label for="privacy-clientid"><%:DHCP client identifier%></label>
+						<select id="privacy-clientid">
+							<option value="1"><%:Do not send%></option>
+							<option value="0"><%:Use OpenWrt default%></option>
+						</select>
+						<small class="tw-muted"><%:Suppresses a stable identifier derived from this router.%></small>
+					</div>
+					<div class="tw-field tw-wide"><label for="privacy-hostname"><%:DHCP hostname%></label>
+						<input id="privacy-hostname" maxlength="63" autocomplete="off" placeholder="<%:Leave blank to send no hostname%>">
+						<small class="tw-muted"><%:A custom name is more recognizable. Leave this blank for the most private setting.%></small>
+					</div>
+				</div>
+				<div class="tw-callout is-warn tw-mt"><strong><%:Connection note:%></strong> <%:Saving may briefly reconnect the current upstream link so the new identity takes effect.%></div>
+				<div class="tw-row tw-mt"><button class="tw-button tw-button-primary" type="button" id="btn-privacy-save"><%:Save privacy settings%></button></div>
+				<p class="tw-message" id="privacy-msg" aria-live="polite"></p>
+			</div>
 			<div class="tw-card tw-col-12" id="card-time">
 				<div class="tw-card-header"><div><h2><%:Date and time%></h2>
 					<p><%:The router has no battery-backed clock. Hotel sign-in pages can prevent internet time from working immediately after startup.%></p></div></div>
@@ -823,7 +857,10 @@ function showPanel(name, focus) {
 		refreshQr();
 		loadLanStatus();
 	}
-	if (name === 'settings') loadTime();
+	if (name === 'settings') {
+		loadPrivacy();
+		loadTime();
+	}
 }
 all('[data-panel]').forEach(function(b) {
 	b.addEventListener('click', function() { showPanel(b.getAttribute('data-panel')); });
@@ -1245,13 +1282,14 @@ function paintNetworks() {
  * leaves it showing a stale "last connected" until a manual reload. */
 function upsertSavedLocal(ssid, band) {
 	if (!ssid) return;
-	var keep = band;
+	var keep = band, previous = null;
+	LAST_SAVED.some(function(n) { if (n.ssid === ssid) { previous = n; return true; } return false; });
 	if (keep == null) {
-		var prev = null;
-		LAST_SAVED.some(function(n) { if (n.ssid === ssid) { prev = n.band; return true; } return false; });
-		keep = prev || '';
+		keep = previous ? previous.band || '' : '';
 	}
-	LAST_SAVED = [{ ssid: ssid, band: keep, last_used: Math.floor(Date.now() / 1000) }]
+	LAST_SAVED = [{ ssid: ssid, band: keep, last_used: Math.floor(Date.now() / 1000),
+		private_mac: previous ? previous.private_mac : DEFAULT_PRIVATE_MAC,
+		macaddr: previous ? previous.macaddr || '' : '' }]
 		.concat(LAST_SAVED.filter(function(n) { return n.ssid !== ssid; }));
 }
 function afterJoin(j) {
@@ -1331,7 +1369,7 @@ el('btn-join').addEventListener('click', function() {
 });
 
 /* ---- internet: remembered networks ---- */
-var SAVED_SET = {}, LAST_SAVED = [];
+var SAVED_SET = {}, LAST_SAVED = [], DEFAULT_PRIVATE_MAC = true, OPEN_SAVED = {};
 function refreshSaved() {
 	return post('/wlan_saved', {}).then(function(j) {
 		if (!j.error) paintSaved(j.saved || []);
@@ -1373,21 +1411,38 @@ function paintSavedLists(seen) {
 }
 /* live: the scan entry (signal, band seen now), null when out of range */
 function savedRow(n, live, cur) {
-	var row = mk('div', 'tw-network' + (cur ? ' is-active' : ''));
-	var meta = mk('div', 'tw-network-meta');
+	var row = mk('details', 'tw-sub-group tw-saved-network' + (cur ? ' is-active' : ''));
+	row.open = !!OPEN_SAVED[n.ssid];
+	row.addEventListener('toggle', function() { OPEN_SAVED[n.ssid] = row.open; });
+	var summary = mk('summary');
+	var meta = mk('span', 'tw-sub-title');
+	var privateMac = n.private_mac !== false;
+	var macLabel = privateMac
+		? '<%:Private MAC%>' + (n.macaddr ? ' ' + n.macaddr : '')
+		: '<%:Hardware MAC%>';
 	meta.appendChild(mk('strong', null, (cur ? '● ' : '') + n.ssid));
 	meta.appendChild(mk('small', null, [bandLabel(live ? live.band : n.band),
 		live ? secLabel(live.encryption) : '',
+		macLabel,
 		'<%:Last connected%> ' + ago(n.last_used)].filter(Boolean).join(' · ')));
-	var acts = mk('div', 'tw-actions');
+	var state = mk('span', 'tw-saved-state');
 	if (live) {
 		var sig = mk('span', 'tw-signal');
 		sig.innerHTML = sigHtml(live.signal);
-		acts.appendChild(sig);
+		state.appendChild(sig);
 	}
-	if (cur) {
-		acts.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
-	} else {
+	if (cur) state.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
+	state.appendChild(mk('span', 'tw-sub-chevron'));
+	summary.appendChild(meta);
+	summary.appendChild(state);
+	row.appendChild(summary);
+
+	var body = mk('div', 'tw-sub-body');
+	body.appendChild(mk('p', 'tw-muted', privateMac
+		? '<%:This network uses the stable private MAC shown above.%>'
+		: '<%:This network exposes the router hardware MAC.%>'));
+	var acts = mk('div', 'tw-actions');
+	if (!cur) {
 		/* the band seen now, not the one saved last time */
 		acts.appendChild(button('<%:Connect%>', 'tw-button-primary', function(b) {
 			rejoinSaved(n.ssid, live ? live.band || '' : '', b);
@@ -1396,17 +1451,48 @@ function savedRow(n, live, cur) {
 		if (live)
 			acts.appendChild(button('<%:Password…%>', '', function() { openJoinBox(row, live); }));
 	}
-	acts.appendChild(button('<%:Forget%>', 'tw-button-danger', function(f) {
+	var privateBtn = button('<%:Use private MAC%>', privateMac ? 'tw-button-primary' : '', function(b) {
+		setSavedPrivacy(n, 'private', b);
+	});
+	privateBtn.disabled = privateMac;
+	acts.appendChild(privateBtn);
+	var hardwareBtn = button('<%:Use hardware MAC%>', !privateMac ? 'tw-button-primary' : '', function(b) {
+		setSavedPrivacy(n, 'hardware', b);
+	});
+	hardwareBtn.disabled = !privateMac;
+	acts.appendChild(hardwareBtn);
+	acts.appendChild(button('<%:Generate new private MAC%>', '', function(b) {
+		setSavedPrivacy(n, 'randomize', b);
+	}));
+	acts.appendChild(button('<%:Forget network%>', 'tw-button-danger', function(f) {
 		arm(f, function() {
 			withBusy(f, post('/wlan_forget', { ssid: n.ssid }), true).then(function(r) {
 				if (r.error) { toast(errMsg(r)); return; }
+				delete OPEN_SAVED[n.ssid];
 				toast('<%:Forgotten:%> ' + n.ssid);
 				refreshSaved();
 			});
 		});
 	}));
-	row.appendChild(meta); row.appendChild(acts);
+	body.appendChild(acts);
+	row.appendChild(body);
 	return row;
+}
+
+function setSavedPrivacy(network, action, btn) {
+	withBusy(btn, post('/wlan_privacy', {
+		ssid: network.ssid, action: action
+	}), true).then(function(j) {
+		if (j.error) { toast(errMsg(j)); return; }
+		network.private_mac = !!j.private_mac;
+		if (j.macaddr) network.macaddr = j.macaddr;
+		toast(action === 'randomize' ? '<%:Generated a new private MAC for%> ' + network.ssid
+			: j.private_mac ? '<%:Private MAC enabled for%> ' + network.ssid
+			: '<%:Hardware MAC enabled for%> ' + network.ssid);
+		paintSaved(LAST_SAVED);
+		/* The active uplink may briefly reconnect after the API response. */
+		setTimeout(refreshSaved, 1800);
+	});
 }
 /* band: where the scan sees it now; blank = the band saved last time */
 function rejoinSaved(ssid, band, btn) {
@@ -1920,7 +2006,7 @@ function renderSubs(list) {
 			p.sub_url ? '<%:refreshable%>' : '<%:pasted links%>',
 			p.active && p.server ? '<%:using%> ' + p.server : ''].filter(Boolean).join(' · ')));
 		sum.appendChild(title);
-		sum.appendChild(mk('span', 'tw-sub-chevron', '⌄'));
+		sum.appendChild(mk('span', 'tw-sub-chevron'));
 		det.appendChild(sum);
 		var body = mk('div', 'tw-sub-body');
 		var bar = mk('div', 'tw-sub-toolbar');
@@ -2184,6 +2270,30 @@ el('btn-wifi-save').addEventListener('click', function() {
 		loadWifi();
 	});
 });
+
+/* ---- upstream identity: privacy-preserving defaults with explicit opt-outs ---- */
+function loadPrivacy() {
+	return post('/privacy_get', {}).then(function(j) {
+		if (j.error) { note('privacy-msg', errMsg(j), 'bad'); return; }
+		DEFAULT_PRIVATE_MAC = !!j.per_network_mac;
+		el('privacy-mac').value = j.per_network_mac ? '1' : '0';
+		el('privacy-clientid').value = j.suppress_client_id ? '1' : '0';
+		el('privacy-hostname').value = j.upstream_hostname || '';
+	});
+}
+el('btn-privacy-save').addEventListener('click', function() {
+	var btn = el('btn-privacy-save');
+	note('privacy-msg', '<%:Applying…%>');
+	withBusy(btn, post('/privacy_set', {
+		per_network_mac: el('privacy-mac').value,
+		suppress_client_id: el('privacy-clientid').value,
+		upstream_hostname: el('privacy-hostname').value
+	}), true).then(function(j) {
+		if (j.error) { note('privacy-msg', errMsg(j), 'bad'); return; }
+		note('privacy-msg', '<%:Saved. The upstream identity is now updated.%>', 'good');
+		loadPrivacy();
+	});
+});
 /* scannable join codes, loaded lazily on the first visit */
 var QR_LOADED = { mgmt: false, vault: false };
 function refreshQr() {
@@ -2270,6 +2380,7 @@ function refreshAll() {
 	refreshSaved();
 	loadWifi();
 	loadLanStatus();
+	loadPrivacy();
 	loadTime();
 }
 updateOverview();

@@ -54,9 +54,30 @@ EOF
 chmod +x "$TMP/bin/uci" "$TMP/bin/date"
 cp "$TMP/add-counter" "$STUB_UCI.counter"
 PATH="$TMP/bin:$PATH"; export PATH
+TW_SYS_CLASS_NET="$TMP/no-net"; export TW_SYS_CLASS_NET
+TW_MAC_COUNTER="$TMP/mac-counter"; export TW_MAC_COUNTER
+echo 1 >"$TW_MAC_COUNTER"
+
+# Deterministic replacement for the /dev/urandom-backed production helper.
+tw_mac_random() {
+	local n
+	n=$(cat "$TW_MAC_COUNTER")
+	echo $((n + 1)) >"$TW_MAC_COUNTER"
+	printf '02:00:00:00:%02x:%02x\n' $((n / 256)) $((n % 256))
+}
 
 count_saved() { uci show travelwizard | grep -c '=savednet'; }
 ssid_of() { uci -q get "travelwizard.$1.ssid"; }
+
+# 0. only locally administered unicast addresses are accepted
+tw_mac_is_local_unicast "02:12:34:56:78:9A" && got=yes || got=no
+check mac-local "$got" "yes"
+tw_mac_is_local_unicast "00:12:34:56:78:9a" && got=yes || got=no
+check mac-global "$got" "no"
+tw_mac_is_local_unicast "03:12:34:56:78:9a" && got=yes || got=no
+check mac-multicast "$got" "no"
+tw_mac_is_local_unicast "not-a-mac" && got=yes || got=no
+check mac-invalid "$got" "no"
 
 # 1. new entry stores every field and stays silent
 out=$(tw_saved_upsert "Hotel_WiFi" "s3cret key" "5g" "WPA2-PSK" "aa:bb:cc:dd:ee:01")
@@ -67,13 +88,22 @@ check new-key "$(uci -q get "travelwizard.$SEC.key")" "s3cret key"
 check new-band "$(uci -q get "travelwizard.$SEC.band")" "5g"
 check new-enc "$(uci -q get "travelwizard.$SEC.enc")" "WPA2-PSK"
 check new-bssid "$(uci -q get "travelwizard.$SEC.bssid")" "aa:bb:cc:dd:ee:01"
+check new-private-mac "$(uci -q get "travelwizard.$SEC.private_mac")" "1"
+check new-mac "$(uci -q get "travelwizard.$SEC.macaddr")" "02:00:00:00:00:01"
 check new-ts "$(uci -q get "travelwizard.$SEC.last_used")" "1000"
 
 # 2. same SSID updates in place (new key, newer timestamp, no duplicate)
 tw_saved_upsert "Hotel_WiFi" "rotated" "2g" "WPA2-PSK" ""
 check update-count "$(count_saved)" "1"
 check update-key "$(uci -q get "travelwizard.$SEC.key")" "rotated"
+check update-mac "$(uci -q get "travelwizard.$SEC.macaddr")" "02:00:00:00:00:01"
 check update-ts "$(uci -q get "travelwizard.$SEC.last_used")" "1001"
+
+# A reconnect gets the saved identity; even a different proposed value cannot
+# rotate a valid existing profile behind the captive portal's back.
+check lookup-mac "$(tw_saved_mac_for_ssid Hotel_WiFi)" "02:00:00:00:00:01"
+tw_saved_upsert "Hotel_WiFi" "rotated" "2g" "WPA2-PSK" "" "06:00:00:00:00:99"
+check preserve-mac "$(uci -q get "travelwizard.$SEC.macaddr")" "02:00:00:00:00:01"
 
 # 3. SSIDs with spaces round-trip
 tw_saved_upsert "My Hotel Guest" "" "2g" "none" ""
@@ -109,6 +139,7 @@ uci set wireless.wwan.key=latte123
 uci set wireless.wwan.encryption=psk2
 uci set wireless.wwan.device=radio1
 uci set wireless.radio1.band=5g
+uci set wireless.wwan.macaddr=06:10:20:30:40:50
 tw_saved_record_wwan && got=yes || got=no
 check wwan-new "$got" "yes"
 SEC=$(uci show travelwizard | sed -n 's/^travelwizard\.\([^.]*\)=savednet/\1/p' | head -n 1)
@@ -116,6 +147,7 @@ check wwan-ssid "$(ssid_of "$SEC")" "Cafe"
 check wwan-key "$(uci -q get "travelwizard.$SEC.key")" "latte123"
 check wwan-band "$(uci -q get "travelwizard.$SEC.band")" "5g"
 check wwan-enc "$(uci -q get "travelwizard.$SEC.enc")" "psk2"
+check wwan-mac "$(uci -q get "travelwizard.$SEC.macaddr")" "06:10:20:30:40:50"
 
 # 8. an entry already there only gets the current key and a fresh timestamp
 uci set "travelwizard.$SEC.band=2g"
@@ -133,5 +165,29 @@ uci -q delete wireless.wwan
 tw_saved_record_wwan && got=yes || got=no
 check wwan-none "$got" "no"
 check wwan-none-count "$(count_saved)" "1"
+
+# 10. Forgetting deletes the identity; recreating the profile gets a new one.
+OLD_MAC=$(uci -q get "travelwizard.$SEC.macaddr")
+uci -q delete "travelwizard.$SEC"
+tw_saved_upsert "Cafe" "latte123" "5g" "psk2" ""
+SEC=$(uci show travelwizard | sed -n 's/^travelwizard\.\([^.]*\)=savednet/\1/p' | head -n 1)
+NEW_MAC=$(uci -q get "travelwizard.$SEC.macaddr")
+[ -n "$NEW_MAC" ] && [ "$NEW_MAC" != "$OLD_MAC" ] && got=yes || got=no
+check forget-new-mac "$got" "yes"
+
+# 11. The global option is only the default for new entries; each saved SSID
+# keeps its own override afterward.
+uci set travelwizard.main.per_network_mac=0
+check existing-stays-private "$(tw_saved_mac_for_ssid Cafe)" "$NEW_MAC"
+tw_saved_upsert "Factory address" "key" "5g" "psk2" ""
+FACTORY_SEC=$(uci show travelwizard | grep 'ssid=Factory address$' | cut -d. -f2 | cut -d= -f1)
+check disabled-mode "$(uci -q get "travelwizard.$FACTORY_SEC.private_mac")" "0"
+check disabled-no-mac "$(uci -q get "travelwizard.$FACTORY_SEC.macaddr")" ""
+uci set travelwizard.main.per_network_mac=1
+check disabled-survives-default-change "$(tw_saved_mac_for_ssid 'Factory address')" ""
+uci set "travelwizard.$SEC.private_mac=0"
+check ssid-disabled "$(tw_saved_mac_for_ssid Cafe)" ""
+uci set "travelwizard.$SEC.private_mac=1"
+check ssid-reenabled "$(tw_saved_mac_for_ssid Cafe)" "$NEW_MAC"
 
 echo "PASS: saved wifi ($PASS assertions)"

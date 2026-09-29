@@ -41,12 +41,26 @@ RADIO=""
 	| sed -n 's/^wireless\.\([^.]*\)=wifi-device/\1/p' | head -n 1)
 [ -z "$RADIO" ] && { echo '{"error":"no wireless device found"}'; exit 1; }
 
+# Re-assert configuration-file changes before DHCP starts. The wizard applies
+# them immediately too, but this keeps direct UCI edits effective on next join.
+tw_apply_uplink_privacy && uci commit network
+
+# Keep one private station identity for the lifetime of a remembered profile
+# when enabled. It must be applied before association; tw_saved_upsert persists
+# it after a successful link. Disabled means no override and the hardware MAC.
+STA_MAC=""
+if tw_private_mac_enabled "$SSID"; then
+	STA_MAC=$(tw_saved_mac_for_ssid "$SSID")
+	[ -n "$STA_MAC" ] || { echo '{"error":"could not create private Wi-Fi identity"}'; exit 1; }
+fi
+
 uci -q delete wireless.wwan
 uci set wireless.wwan='wifi-iface'
 uci set wireless.wwan.device="$RADIO"
 uci set wireless.wwan.mode='sta'
 uci set wireless.wwan.network='wwan'
 uci set wireless.wwan.ssid="$SSID"
+[ -n "$STA_MAC" ] && uci set wireless.wwan.macaddr="$STA_MAC"
 if [ -z "$KEY" ]; then
 	case "$ENCHINT" in
 		""|none|NONE|unknown|UNKNOWN) ENC="none" ;;
@@ -85,7 +99,7 @@ fi
 # wwan hotplug records it at the same moment: the lock keeps the two from
 # both adding an entry.
 lock /var/lock/tw-saved
-tw_saved_upsert "$SSID" "$KEY" "$BAND" "$ENCHINT" "$BSSID"
+tw_saved_upsert "$SSID" "$KEY" "$BAND" "$ENCHINT" "$BSSID" "$STA_MAC"
 uci commit travelwizard
 lock -u /var/lock/tw-saved
 

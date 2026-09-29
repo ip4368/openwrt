@@ -23,6 +23,9 @@ cat >"$TMP/jshn.sh" <<'EOF'
 EOF
 cat >"$TMP/common.sh" <<'EOF'
 tw_uci_encryption() { echo psk2; }
+tw_private_mac_enabled() { [ "${TEST_PRIVATE_MAC:-1}" = 1 ]; }
+tw_apply_uplink_privacy() { echo privacy >>"$CALLS"; return 1; }
+tw_saved_mac_for_ssid() { echo 02:11:22:33:44:55; }
 tw_saved_upsert() { echo "saved $*" >>"$CALLS"; }
 EOF
 cat >"$TMP/bin/uci" <<'EOF'
@@ -72,13 +75,29 @@ OUT=$(PATH="$TMP/bin:$PATH" TW_JSHN="$TMP/jshn.sh" \
 check linked "$(printf '%s' "$OUT" | grep -o '"linked":[a-z]*')" '"linked":true'
 check ssid "$(printf '%s' "$OUT" | grep -o '"ssid":"[^"]*"')" '"ssid":"Hotel"'
 check async-captive "$(printf '%s' "$OUT" | grep -o '"internet":[^}]*')" '"internet":null'
-check saved "$(grep -c '^saved Hotel secret 5g WPA2 PSK' "$CALLS")" 1
+check saved "$(grep -c '^saved Hotel secret 5g WPA2 PSK  02:11:22:33:44:55$' "$CALLS")" 1
+check private-mac "$(grep -c '^uci set wireless.wwan.macaddr=02:11:22:33:44:55$' "$CALLS")" 1
+check privacy-applied "$(grep -c '^privacy$' "$CALLS")" 1
 check portal-cleared "$(grep -c '^portal auto$' "$CALLS")" 2
+MAC_LINE=$(grep -n -m1 'wireless.wwan.macaddr=' "$CALLS" | cut -d: -f1)
+RELOAD_LINE=$(grep -n -m1 '^wifi reload ' "$CALLS" | cut -d: -f1)
+[ "$MAC_LINE" -lt "$RELOAD_LINE" ] || {
+	echo "FAIL: private MAC was not applied before association"; exit 1;
+}
+PASS=$((PASS + 1))
 SAVED_LINE=$(grep -n -m1 '^saved ' "$CALLS" | cut -d: -f1)
 PORTAL_LINE=$(grep -n -m1 '^portal auto$' "$CALLS" | cut -d: -f1)
 [ "$SAVED_LINE" -lt "$PORTAL_LINE" ] || {
 	echo "FAIL: portal was cleared before credentials were saved"; exit 1;
 }
 PASS=$((PASS + 1))
+
+# With private addressing disabled, the rebuilt station has no override and
+# therefore uses the radio's hardware address.
+: >"$CALLS"
+OUT=$(TEST_PRIVATE_MAC=0 PATH="$TMP/bin:$PATH" TW_JSHN="$TMP/jshn.sh" \
+	TW_COMMON="$TMP/common.sh" TW_SUBNET_FIX="$TMP/bin/subnet-fix" \
+	TW_PORTAL="$TMP/bin/portal" sh "$JOIN" Hotel secret 5g 'WPA2 PSK' '')
+check factory-mac "$(grep -c 'wireless.wwan.macaddr=' "$CALLS")" 0
 
 echo "PASS: wan join flow ($PASS assertions)"

@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=travelwizard
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=17
+PKG_RELEASE:=21
 PKG_LICENSE:=MIT
 PKGARCH:=all
 
@@ -43,6 +43,7 @@ define Package/travelwizard/install
 	$(INSTALL_DIR) $(1)/usr/lib/travelwizard
 	$(INSTALL_CONF) ./files/etc/config/travelwizard $(1)/etc/config/travelwizard
 	$(INSTALL_BIN) ./files/etc/uci-defaults/90-travelwizard $(1)/etc/uci-defaults/90-travelwizard
+	$(INSTALL_BIN) ./files/etc/uci-defaults/91-travelwizard-uplink-privacy $(1)/etc/uci-defaults/91-travelwizard-uplink-privacy
 	$(INSTALL_BIN) ./files/etc/hotplug.d/iface/30-tw-subnet $(1)/etc/hotplug.d/iface/30-tw-subnet
 	$(INSTALL_BIN) ./files/etc/hotplug.d/iface/80-tw-uplink $(1)/etc/hotplug.d/iface/80-tw-uplink
 	$(INSTALL_BIN) ./files/etc/rc.button/BTN_0 $(1)/etc/rc.button/BTN_0
@@ -59,6 +60,7 @@ define Package/travelwizard/install
 	$(INSTALL_BIN) ./files/usr/sbin/tw-probe $(1)/usr/sbin/tw-probe
 	$(INSTALL_BIN) ./files/usr/sbin/tw-wifi-apply $(1)/usr/sbin/tw-wifi-apply
 	$(INSTALL_BIN) ./files/usr/sbin/tw-upstream $(1)/usr/sbin/tw-upstream
+	$(INSTALL_BIN) ./files/usr/sbin/tw-uplink-privacy $(1)/usr/sbin/tw-uplink-privacy
 	$(INSTALL_BIN) ./files/usr/sbin/tw-lan-switch $(1)/usr/sbin/tw-lan-switch
 	$(INSTALL_BIN) ./files/usr/sbin/tw-time $(1)/usr/sbin/tw-time
 	$(INSTALL_BIN) ./files/usr/sbin/tw-portal $(1)/usr/sbin/tw-portal

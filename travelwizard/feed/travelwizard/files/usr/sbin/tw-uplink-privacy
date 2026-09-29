@@ -1,0 +1,68 @@
+#!/bin/sh
+# Apply TravelWizard's upstream identity settings. --no-restart only stages
+# UCI changes; --defer-restart lets the web request finish before Wi-Fi moves.
+. "${TW_COMMON:-/usr/lib/travelwizard/common.sh}"
+
+NO_RESTART=0
+DEFER_RESTART=0
+case "$1" in
+	--no-restart) NO_RESTART=1 ;;
+	--defer-restart) DEFER_RESTART=1 ;;
+esac
+network_changed=false
+wireless_changed=false
+
+if tw_apply_uplink_privacy; then
+	uci commit network
+	network_changed=true
+fi
+
+if uci -q get wireless.wwan >/dev/null 2>&1; then
+	ssid=$(uci -q get wireless.wwan.ssid)
+	if tw_private_mac_enabled "$ssid"; then
+		if [ -n "$ssid" ] && [ "$ssid" != "__unset__" ]; then
+			macaddr=$(tw_saved_mac_for_ssid "$ssid") || {
+				echo '{"error":"could not create private Wi-Fi identity"}'
+				exit 1
+			}
+			current=$(uci -q get wireless.wwan.macaddr)
+			current=$(tw_mac_normalize "$current" 2>/dev/null)
+			if [ "$current" != "$macaddr" ]; then
+				uci set "wireless.wwan.macaddr=$macaddr"
+				uci commit wireless
+				wireless_changed=true
+			fi
+			# Persist a newly generated identity before the reconnect.
+			tw_saved_record_wwan && uci commit travelwizard
+		fi
+	elif uci -q get wireless.wwan.macaddr >/dev/null 2>&1; then
+		uci -q delete wireless.wwan.macaddr
+		uci commit wireless
+		wireless_changed=true
+	fi
+fi
+
+restart_links() {
+	if [ "$wireless_changed" = true ]; then
+		radio=$(uci -q get wireless.wwan.device)
+		if [ -n "$radio" ]; then
+			wifi reload "$radio" >/dev/null 2>&1
+		else
+			wifi reload >/dev/null 2>&1
+		fi
+	elif [ "$network_changed" = true ]; then
+		ifup wwan >/dev/null 2>&1
+	fi
+	[ "$network_changed" = true ] && ifup wan >/dev/null 2>&1
+}
+
+if [ "$NO_RESTART" -eq 0 ]; then
+	if [ "$DEFER_RESTART" -eq 1 ]; then
+		( sleep 1; restart_links ) >/dev/null 2>&1 &
+	else
+		restart_links
+	fi
+fi
+
+printf '{"saved":true,"network_changed":%s,"wireless_changed":%s}\n' \
+	"$network_changed" "$wireless_changed"

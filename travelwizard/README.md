@@ -121,7 +121,14 @@ tile shows live status (green/amber/red dot + one-line preview):
   could outlast uhttpd's 60 s timeout); the UI shows "checking" and asks
   `/captive` on its own. Joined networks are remembered
   (SSID + key, server-side only) for one-tap reconnect from the Remembered
-  networks list, with Forget to drop one.
+  networks list, with Forget to drop one. Each remembered network also owns
+  a random locally administered station MAC: reconnects reuse it, while
+  forgetting and joining again creates a new one. These behaviors are
+  configurable in the wizard: each remembered SSID can independently use its
+  private or hardware MAC, or generate a fresh private MAC from its expanded
+  options. Settings chooses the default for newly remembered networks, DHCPv4
+  can omit or send a custom hostname, and its stable client identifier can be
+  suppressed or restored to the OpenWrt default.
 - **Hotel sign-in** — `tw-captive-check` probes
   `connectivitycheck.gstatic.com/generate_204` (+ Apple/MSFT/Huawei fallbacks). If a
   portal hijacks it, the screen shows numbered steps + **Open hotel sign-in**
@@ -150,10 +157,15 @@ tile shows live status (green/amber/red dot + one-line preview):
   (`tw-wifi-qr` + `/wifi_qr`, regenerated on save). This screen also shows
   whether the side switch currently places the wired LAN jack on the direct
   or protected network.
-- **Settings / clock recovery** — shows router time beside the browser's time,
+- **Settings** — controls the upstream Wi-Fi address, DHCP hostname and DHCP
+  client identifier. It also shows router time beside the browser's time,
   retries NTP after a hotel sign-in, and can copy the browser's epoch to the
   router when captive access blocks NTP. A persistent timestamp prevents the
   next reboot from falling all the way back to the firmware build date.
+  The defaults live under `travelwizard.main` in UCI, while each `savednet`
+  section has its own `private_mac` option. After manual edits, run
+  `tw-uplink-privacy` to apply them immediately (a Wi-Fi join also re-applies
+  them automatically).
 - **Setup portal** — while the router has no upstream link, `tw-portal`
   (driven by the wwan/wan hotplug hook, a boot init script, and a firewall
   include that survives `fw4` restarts) answers all DNS with the router IP
@@ -202,9 +214,9 @@ Notes:
   inside the ImageBuilder container.
 - Verified 2026-09-22 with `v25.12.5`: manifest resolves all names, image
   builds (~24 MB, vs ~9.5 MB stock — almost all of it sing-box), and the
-  assembled rootfs contains all `tw-*` helpers, `90-travelwizard`, the LuCI
-  controller/view, plus `sing-box`, `openvpn`, `pbr`, `wg`, `curl`, `iwinfo`,
-  `jsonfilter`.
+  assembled rootfs contains all `tw-*` helpers, the `90-travelwizard` and
+  `91-travelwizard-uplink-privacy` defaults, the LuCI controller/view, plus
+  `sing-box`, `openvpn`, `pbr`, `wg`, `curl`, `iwinfo`, `jsonfilter`.
 
 ### Option B — full buildroot on a Linux host
 

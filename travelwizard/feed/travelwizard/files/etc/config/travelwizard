@@ -19,6 +19,15 @@ config main 'main'
 	option vpn_mode 'off'
 	# Preferred upstream: auto (ethernet first) | wifi | ethernet
 	option upstream 'auto'
+	# Default for newly remembered upstream Wi-Fi: use a locally administered
+	# station MAC. Each savednet gets its own private_mac override, so changing
+	# this default does not alter existing networks.
+	option per_network_mac '1'
+	# DHCP hostname sent to wired and Wi-Fi uplinks. '*' sends no hostname.
+	option upstream_hostname '*'
+	# Suppress DHCPv4's stable, device-derived client identifier. Set to 0 to
+	# use OpenWrt's default client identifier.
+	option suppress_client_id '1'
 	# Set to 1 once legacy single-config sections were folded into
 	# profiles; stops the migration from ever re-running (and from
 	# resurrecting profiles the user deleted).

@@ -1,0 +1,34 @@
+#!/bin/sh
+# Add privacy knobs to upgraded installations, then apply them without
+# bouncing an uplink during boot. Fresh installs already have these defaults.
+
+changed=0
+ensure() {
+	local option="$1" value="$2"
+	uci -q get "travelwizard.main.$option" >/dev/null 2>&1 && return
+	uci set "travelwizard.main.$option=$value"
+	changed=1
+}
+
+ensure per_network_mac 1
+ensure upstream_hostname '*'
+ensure suppress_client_id 1
+
+# Freeze the current default onto legacy profiles. From this point onward the
+# global option is only the default for networks remembered in the future.
+default_mac=$(uci -q get travelwizard.main.per_network_mac)
+case "$default_mac" in 0|1) ;; *) default_mac=1 ;; esac
+for section in $(uci show travelwizard 2>/dev/null \
+	| sed -n 's/^travelwizard\.\([^.]*\)=savednet/\1/p'); do
+	case "$(uci -q get "travelwizard.$section.private_mac")" in
+		0|1) ;;
+		*)
+			uci set "travelwizard.$section.private_mac=$default_mac"
+			changed=1
+			;;
+	esac
+done
+[ "$changed" -eq 0 ] || uci commit travelwizard
+
+sh "${TW_PRIVACY_APPLY:-/usr/sbin/tw-uplink-privacy}" --no-restart >/dev/null
+exit $?
