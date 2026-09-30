@@ -222,6 +222,8 @@ transform:rotate(45deg);transition:transform .15s}
 .tw-saved-network .tw-sub-body{padding:12px 13px 13px}
 .tw-saved-network .tw-sub-body p{margin:0 0 10px}
 .tw-saved-state{display:flex;align-items:center;gap:8px;flex-shrink:0}
+/* the row now carries Connect too: long SSIDs wrap instead of squeezing it */
+.tw-saved-network .tw-sub-title{overflow-wrap:anywhere}
 .tw-saved-away{margin-top:9px}
 .tw-saved-away summary{padding:12px 14px}
 .tw-saved-away .tw-sub-body{padding:12px 14px 14px}
@@ -1401,7 +1403,7 @@ function paintSavedLists(seen) {
 	box.innerHTML = '';
 	awayBox.innerHTML = '';
 	near.forEach(function(n) { box.appendChild(savedRow(n, seen[n.ssid], isCur(n))); });
-	away.forEach(function(n) { awayBox.appendChild(savedRow(n, null, false)); });
+	away.forEach(function(n) { awayBox.appendChild(savedRow(n, null, false, true)); });
 	el('saved-away-count').textContent = away.length;
 	el('saved-away').hidden = !away.length;
 	if (!LAST_SAVED.length)
@@ -1409,8 +1411,9 @@ function paintSavedLists(seen) {
 	else if (!near.length)
 		box.innerHTML = emptyState('<%:None of your remembered networks are in range right now.%>');
 }
-/* live: the scan entry (signal, band seen now), null when out of range */
-function savedRow(n, live, cur) {
+/* live: the scan entry (signal, band seen now), null when out of range or
+ * before the first scan; away: the last scan did not find it */
+function savedRow(n, live, cur, away) {
 	var row = mk('details', 'tw-sub-group tw-saved-network' + (cur ? ' is-active' : ''));
 	row.open = !!OPEN_SAVED[n.ssid];
 	row.addEventListener('toggle', function() { OPEN_SAVED[n.ssid] = row.open; });
@@ -1431,7 +1434,18 @@ function savedRow(n, live, cur) {
 		sig.innerHTML = sigHtml(live.signal);
 		state.appendChild(sig);
 	}
-	if (cur) state.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
+	if (cur) {
+		state.appendChild(mk('span', 'tw-good', '<%:Connected%>'));
+	} else if (!away) {
+		/* reconnecting is the common action: keep it on the row itself.
+		 * The band seen now, not the one saved last time. */
+		var connect = button('<%:Connect%>', 'tw-button-primary', function(b) {
+			rejoinSaved(n.ssid, live ? live.band || '' : '', b);
+		});
+		/* a click inside <summary> must not also expand/collapse the row */
+		connect.addEventListener('click', function(ev) { ev.preventDefault(); });
+		state.appendChild(connect);
+	}
 	state.appendChild(mk('span', 'tw-sub-chevron'));
 	summary.appendChild(meta);
 	summary.appendChild(state);
@@ -1442,15 +1456,9 @@ function savedRow(n, live, cur) {
 		? '<%:This network uses the stable private MAC shown above.%>'
 		: '<%:This network exposes the router hardware MAC.%>'));
 	var acts = mk('div', 'tw-actions');
-	if (!cur) {
-		/* the band seen now, not the one saved last time */
-		acts.appendChild(button('<%:Connect%>', 'tw-button-primary', function(b) {
-			rejoinSaved(n.ssid, live ? live.band || '' : '', b);
-		}));
-		/* the password may have changed since (hotels rotate them) */
-		if (live)
-			acts.appendChild(button('<%:Password…%>', '', function() { openJoinBox(row, live); }));
-	}
+	/* the password may have changed since (hotels rotate them) */
+	if (!cur && live)
+		acts.appendChild(button('<%:Password…%>', '', function() { openJoinBox(row, live); }));
 	var privateBtn = button('<%:Use private MAC%>', privateMac ? 'tw-button-primary' : '', function(b) {
 		setSavedPrivacy(n, 'private', b);
 	});
