@@ -80,7 +80,9 @@ TCP/UDP/DNS are unaffected.
     the router has no RTC and every cert reads "not yet valid" until sync.
   - `files/usr/sbin/tw-probe '<profile>' '<endpoint>'` — full end-to-end latency
     test of one endpoint: a throwaway sing-box (loopback SOCKS, no TUN) fetches
-    a probe URL through just that endpoint and reports ok/latency_ms
+    a probe URL through just that endpoint and reports ok/latency_ms (cold:
+    first request incl. tunnel setup) plus warm_latency_ms (median of three
+    more fetches, each a new connection with the tunnel already up)
   - `files/usr/sbin/tw-vpn-apply` — apply UCI mode: tunnels + pbr policy + vault DHCP DNS + service restarts
   - `files/usr/sbin/tw-vpn-health` — tunnel state + direct-vs-vault egress IPs + leak verdict
   - `files/usr/sbin/tw-wifi-apply` — rename/rekey both SSIDs on all radios

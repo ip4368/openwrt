@@ -1836,12 +1836,20 @@ function showProbe(pill, j) {
 	} else if (j.pending) {
 		pill.className = 'tw-latency'; pill.textContent = '…'; pill.title = '';
 	} else if (j.ok) {
-		/* UDP is informational (DNS relayed through the endpoint) */
+		/* UDP is informational (DNS relayed through the endpoint).
+		 * Cold = first request incl. proxy setup; warm = median of new
+		 * connections with the tunnel already up (like opening a new site).
+		 * Colour stays on cold so a slow handshake still stands out. */
 		var udpBad = j.udp === 'failed';
+		var warm = (typeof j.warm_latency_ms === 'number') ? j.warm_latency_ms : null;
 		pill.className = 'tw-latency ' + (udpBad || j.latency_ms >= 800 ? 'is-warn'
 			: j.latency_ms < 250 ? 'is-good' : 'is-warn');
-		pill.textContent = j.latency_ms + ' ms' + (udpBad ? ' · <%:no UDP%>' : '');
-		pill.title = 'HTTPS ' + (j.http_code || 'ok') + ' · UDP (DNS): ' +
+		pill.textContent = j.latency_ms + ' ms' +
+			(warm !== null ? ' · <%:warm%> ' + warm + ' ms' : '') +
+			(udpBad ? ' · <%:no UDP%>' : '');
+		pill.title = '<%:Cold%> ' + j.latency_ms + ' ms (<%:first request, incl. tunnel setup%>)' +
+			(warm !== null ? ' · <%:Warm%> ' + warm + ' ms (<%:new connection, tunnel already up%>)' : '') +
+			' · HTTPS ' + (j.http_code || 'ok') + ' · UDP (DNS): ' +
 			(j.udp === 'ok' ? '<%:works%>' : udpBad ? '<%:failed — calls and games may not work%>' : '<%:not tested%>');
 	} else {
 		pill.className = 'tw-latency is-bad'; pill.textContent = '<%:Failed%>'; pill.title = errMsg(j);
@@ -1930,7 +1938,7 @@ function endpointRow(p, tag, eps) {
 				if (!j.ok) toast(tag + ': ' + errMsg(j));
 			});
 		});
-		test.title = '<%:Full connection test: HTTPS, latency and UDP%>';
+		test.title = '<%:Full connection test: cold/warm latency, HTTPS and UDP%>';
 		acts.appendChild(test);
 	}
 	if (active) {

@@ -1,10 +1,15 @@
 #!/bin/sh
 # Full end-to-end probe of one imported proxy endpoint: spin up a throwaway
 # sing-box with just that endpoint (loopback SOCKS inbound, no TUN), fetch a
-# probe URL through it, and report success + latency. A DNS lookup over UDP
-# through the same instance reports whether the endpoint also carries UDP
-# (informational: HTTPS decides ok). The live tunnel and firewall are
-# untouched.
+# probe URL through it, and report success + cold/warm latency. Every fetch is
+# a separate curl, i.e. a new origin connection like opening a new site. The
+# first (cold) fetch also pays proxy setup; the later (warm) fetches run with
+# the instance already up, so protocols that keep their proxy session
+# (hysteria2/tuic/naive/anytls) get faster while ones that re-dial per
+# connection (vless/vmess/trojan/ss without mux) stay close to cold, as they
+# would in the live tunnel. A DNS lookup over UDP through the same instance
+# reports whether the endpoint also carries UDP (informational: HTTPS decides
+# ok). The live tunnel and firewall are untouched.
 # Usage: tw-probe '<profile-id>' '<endpoint-tag>'
 [ -r /usr/share/libubox/jshn.sh ] && . /usr/share/libubox/jshn.sh || NO_JSHN=1
 . "${TW_COMMON:-/usr/lib/travelwizard/common.sh}"
@@ -15,6 +20,7 @@ SB_DIR="${TW_SB_DIR:-/etc/sing-box}"
 SB_BIN="${TW_SINGBOX_BIN:-sing-box}"
 CURL_BIN="${TW_CURL_BIN:-curl}"
 NSLOOKUP_BIN="${TW_NSLOOKUP_BIN:-nslookup}"
+WARM_RUNS="${TW_PROBE_WARM_RUNS:-3}"
 SUBIMPORT="${TW_SUBIMPORT:-/usr/sbin/tw-sub-import}"
 PROBE_URL="${TW_PROBE_URL:-https://www.gstatic.com/generate_204}"
 DNS_NAME="${TW_PROBE_DNS_NAME:-www.gstatic.com}"
@@ -182,7 +188,12 @@ while [ "$k" -lt "$PORT_SPAN" ] && [ "$started" -lt "$TRIES" ]; do
 done
 [ -n "$PORT" ] || fail "could not start a probe instance (no free local port)"
 
-# --- measure one HTTPS fetch through the endpoint ---------------------------
+# --- measure HTTPS fetches through the endpoint ----------------------------
+# The endpoint passes on the cold fetch, which doubles as the warm-up. Then up
+# to WARM_RUNS warm fetches, each a separate curl (new origin connection, warm
+# proxy); warm_latency_ms is their median. The first failed warm fetch stops
+# sampling so a flaky endpoint doesn't add 12s per sample, and with no good
+# sample warm_latency_ms is omitted rather than failing the endpoint.
 MEASURE=$("$CURL_BIN" -s -o /dev/null -w '%{http_code} %{time_total}' \
 	--max-time 12 -x "socks5h://127.0.0.1:$PORT" "$PROBE_URL" 2>/dev/null)
 RC=$?
@@ -198,6 +209,25 @@ case "$CODE" in
 esac
 MS=$(awk -v t="$SECS" 'BEGIN { printf "%.0f", t * 1000 }')
 [ -n "$MS" ] || fail "could not parse probe timing"
+WARM_MS=""
+WARM_SAMPLES=""
+w=0; nw=0
+while [ "$w" -lt "$WARM_RUNS" ]; do
+	w=$((w + 1))
+	WARM_MEASURE=$("$CURL_BIN" -s -o /dev/null -w '%{http_code} %{time_total}' \
+		--max-time 12 -x "socks5h://127.0.0.1:$PORT" "$PROBE_URL" 2>/dev/null) || break
+	case "${WARM_MEASURE%% *}" in
+		2*) : ;;
+		*) break ;;
+	esac
+	SAMPLE=$(awk -v t="${WARM_MEASURE##* }" 'BEGIN { printf "%.0f", t * 1000 }')
+	[ -n "$SAMPLE" ] || break
+	WARM_SAMPLES="$WARM_SAMPLES $SAMPLE"; nw=$((nw + 1))
+done
+# median; with an even count take the upper middle (the conservative one)
+if [ "$nw" -gt 0 ]; then
+	WARM_MS=$(printf '%s\n' $WARM_SAMPLES | sort -n | sed -n "$((nw / 2 + 1))p")
+fi
 
 # --- UDP: one DNS lookup relayed through the endpoint ----------------------
 UDP=untested
@@ -215,10 +245,16 @@ if [ -z "$NO_JSHN" ]; then
 	json_add_string tag "$TAG"
 	json_add_boolean ok 1
 	json_add_int latency_ms "$MS"
+	[ -n "$WARM_MS" ] && json_add_int warm_latency_ms "$WARM_MS"
 	json_add_string http_code "$CODE"
 	json_add_string udp "$UDP"
 	json_dump
 else
-	printf '{"tag":"%s","ok":true,"latency_ms":%s,"http_code":"%s","udp":"%s"}\n' \
-		"$(jesc "$TAG")" "$MS" "$(jesc "$CODE")" "$UDP"
+	if [ -n "$WARM_MS" ]; then
+		printf '{"tag":"%s","ok":true,"latency_ms":%s,"warm_latency_ms":%s,"http_code":"%s","udp":"%s"}\n' \
+			"$(jesc "$TAG")" "$MS" "$WARM_MS" "$(jesc "$CODE")" "$UDP"
+	else
+		printf '{"tag":"%s","ok":true,"latency_ms":%s,"http_code":"%s","udp":"%s"}\n' \
+			"$(jesc "$TAG")" "$MS" "$(jesc "$CODE")" "$UDP"
+	fi
 fi

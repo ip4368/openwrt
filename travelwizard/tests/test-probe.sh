@@ -31,6 +31,26 @@ printf 'Server:\t\t%s\nAddress:\t%s#53\n\nName:\t%s\nAddress: 142.250.1.1\n' "$2
 EOF
 chmod +x "$TMP/bin/nslookup"
 export TW_NSLOOKUP_BIN="$TMP/bin/nslookup"
+export CURL_N="$TMP/curl-n"
+# counting success stub: call 1 of a probe run is the cold fetch (123ms),
+# calls 2-4 the warm fetches (60/45/50ms, median 50); reset_curl realigns
+# the counter before each success-path check
+install_ok_curl() {
+	cat >"$TMP/bin/curl" <<'EOF'
+#!/bin/sh
+n=$(cat "$CURL_N" 2>/dev/null || echo 0)
+n=$((n + 1)); echo "$n" >"$CURL_N"
+case "$n" in
+	1) echo '204 0.123' ;;
+	2) echo '204 0.060' ;;
+	3) echo '204 0.045' ;;
+	*) echo '204 0.050' ;;
+esac
+exit 0
+EOF
+	chmod +x "$TMP/bin/curl"
+}
+reset_curl() { rm -f "$CURL_N"; }
 SS='ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@203.0.113.12:8388#Someone'
 printf 'Someone\t%s\n' "$SS" >"$TMP/sb/tw-p1.map"
 
@@ -76,16 +96,14 @@ for a in "$@"; do [ "$prev" = "-c" ] && cfg="$a"; prev="$a"; done
 port=$(grep -o '"listen_port":[0-9]*' "$cfg" | head -n 1 | grep -o '[0-9]*')
 exec python3 -c 'import socket,sys,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(1); time.sleep(30)' "$port"
 EOF
-cat >"$TMP/bin/curl" <<'EOF'
-#!/bin/sh
-echo '204 0.123'
-exit 0
-EOF
-chmod +x "$TMP/bin/sing-box" "$TMP/bin/curl"
-check p6-ok "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
+install_ok_curl
+chmod +x "$TMP/bin/sing-box"
+reset_curl; check p6-ok "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
 	TW_SINGBOX_BIN=sing-box TW_CURL_BIN=curl TW_READY_WAIT=6 \
 	PATH="$TMP/bin:$PATH" sh "$PROBE" 'p1' 'Someone' 2>/dev/null)" \
-	'{"tag":"Someone","ok":true,"latency_ms":123,"http_code":"204","udp":"ok"}'
+	'{"tag":"Someone","ok":true,"latency_ms":123,"warm_latency_ms":50,"http_code":"204","udp":"ok"}'
+# the cold fetch plus three warm fetches, each its own curl (new connection)
+check p6-curl-runs "$(cat "$CURL_N")" "4"
 
 # 7. non-2xx answer and curl timeout surface as probe failures
 cat >"$TMP/bin/curl" <<'EOF'
@@ -112,12 +130,7 @@ check p7-timeout "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
 # 19800 = 0x4D58. The first line is a stale server-side TIME_WAIT on the
 # probe port (left by the previous probe's curl), the second an unrelated
 # connection *to* that port; neither means a proxy is accepting.
-cat >"$TMP/bin/curl" <<'EOF'
-#!/bin/sh
-echo '204 0.123'
-exit 0
-EOF
-chmod +x "$TMP/bin/curl"
+install_ok_curl
 cat >"$TMP/fake-timewait.txt" <<'EOF'
   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt
    1: 0100007F:4D58 0100007F:8251 06 00000000:00000000 00:00000000 00000000     0        0 0 3 0000000000000000
@@ -142,18 +155,18 @@ cat >"$TMP/fake-listen.txt" <<'EOF'
    3: 0100007F:4D5B 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 3 0000000000000000
    4: 0100007F:4D5C 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 3 0000000000000000
 EOF
-check p9-listen "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
+reset_curl; check p9-listen "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
 	TW_SINGBOX_BIN=sing-box TW_CURL_BIN=curl TW_READY_WAIT=6 TW_PROBE_PORT_SPAN=5 \
 	TW_PROC_NET_TCP="$TMP/fake-listen.txt" TW_PROC_NET_TCP6="$TMP/no-tcp6" \
 	TW_PROC_DIR="$TMP/noproc" \
 	PATH="$TMP/bin:$PATH" sh "$PROBE" 'p1' 'Someone' 2>/dev/null)" \
-	'{"tag":"Someone","ok":true,"latency_ms":123,"http_code":"204","udp":"ok"}'
+	'{"tag":"Someone","ok":true,"latency_ms":123,"warm_latency_ms":50,"http_code":"204","udp":"ok"}'
 
 # 10. UDP is informational: a failed DNS relay still passes the endpoint
-check p10-udp-failed "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
+reset_curl; check p10-udp-failed "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
 	TW_SINGBOX_BIN=sing-box TW_CURL_BIN=curl NS_FAIL=1 \
 	PATH="$TMP/bin:$PATH" sh "$PROBE" 'p1' 'Someone' 2>/dev/null)" \
-	'{"tag":"Someone","ok":true,"latency_ms":123,"http_code":"204","udp":"failed"}'
+	'{"tag":"Someone","ok":true,"latency_ms":123,"warm_latency_ms":50,"http_code":"204","udp":"failed"}'
 # the probe config carries the per-port DNS listener, routed ahead of the
 # port-53 hijack
 printf '%s\n' "$SS" | TW_INBOUND=socks TW_SOCKS_PORT=19801 \
@@ -175,10 +188,10 @@ grep -q dns-probe-in "$cfg" && exit 1
 exec "${0%/*}/sing-box-nodns" "$@"
 EOF
 chmod +x "$TMP/bin/sing-box"
-check p11-fallback "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
+reset_curl; check p11-fallback "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
 	TW_SINGBOX_BIN=sing-box TW_CURL_BIN=curl \
 	PATH="$TMP/bin:$PATH" sh "$PROBE" 'p1' 'Someone' 2>/dev/null)" \
-	'{"tag":"Someone","ok":true,"latency_ms":123,"http_code":"204","udp":"untested"}'
+	'{"tag":"Someone","ok":true,"latency_ms":123,"warm_latency_ms":50,"http_code":"204","udp":"untested"}'
 mv "$TMP/bin/sing-box-nodns" "$TMP/bin/sing-box"
 
 # 12. per-port locks: a live holder keeps the port, a dead one is reclaimed
@@ -190,10 +203,10 @@ check p12-locked "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
 	'{"tag":"Someone","ok":false,"error":"could not start a probe instance (no free local port)"}'
 sh -c 'exit 0' & DEAD=$!; wait "$DEAD"
 echo "$DEAD" >"$TMP/locks/19800/pid"
-check p12-reclaim "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
+reset_curl; check p12-reclaim "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
 	TW_SINGBOX_BIN=sing-box TW_CURL_BIN=curl TW_PROBE_PORT_SPAN=1 \
 	PATH="$TMP/bin:$PATH" sh "$PROBE" 'p1' 'Someone' 2>/dev/null)" \
-	'{"tag":"Someone","ok":true,"latency_ms":123,"http_code":"204","udp":"ok"}'
+	'{"tag":"Someone","ok":true,"latency_ms":123,"warm_latency_ms":50,"http_code":"204","udp":"ok"}'
 check p12-released "$(ls "$TMP/locks" | wc -l | tr -d ' ')" "0"
 
 # 13. readiness needs a listener owned by our instance. The stub records
@@ -217,6 +230,7 @@ EOF
 chmod +x "$TMP/bin/sing-box-proc"
 probe_proc() { # $1 own inode $2 published inode
 	rm -rf "$TMP/proc"; mkdir -p "$TMP/proc/self"
+	reset_curl
 	head -n 1 "$TMP/fake-listen.txt" >"$TMP/tcp-live.txt"
 	TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" TW_SINGBOX_BIN=sing-box-proc \
 		TW_CURL_BIN=curl TW_READY_WAIT=2 TW_PROBE_TRIES=1 TW_PROBE_PORT_SPAN=1 \
@@ -226,8 +240,50 @@ probe_proc() { # $1 own inode $2 published inode
 		PATH="$TMP/bin:$PATH" sh "$PROBE" 'p1' 'Someone' 2>/dev/null
 }
 check p13-owned "$(probe_proc 4242 4242)" \
-	'{"tag":"Someone","ok":true,"latency_ms":123,"http_code":"204","udp":"ok"}'
+	'{"tag":"Someone","ok":true,"latency_ms":123,"warm_latency_ms":50,"http_code":"204","udp":"ok"}'
 check p13-foreign "$(probe_proc 4242 1111)" \
 	'{"tag":"Someone","ok":false,"error":"could not start a probe instance (no free local port)"}'
+
+# 14. a failed warm fetch still passes the endpoint on the cold fetch, with
+# no warm_latency_ms rather than a misleading value, and stops sampling
+cat >"$TMP/bin/curl" <<'EOF'
+#!/bin/sh
+n=$(cat "$CURL_N" 2>/dev/null || echo 0)
+n=$((n + 1)); echo "$n" >"$CURL_N"
+if [ "$n" -eq 1 ]; then echo '204 0.123'; exit 0; else exit 7; fi
+EOF
+chmod +x "$TMP/bin/curl"
+reset_curl; check p14-warm-failed "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
+	TW_SINGBOX_BIN=sing-box TW_CURL_BIN=curl \
+	PATH="$TMP/bin:$PATH" sh "$PROBE" 'p1' 'Someone' 2>/dev/null)" \
+	'{"tag":"Someone","ok":true,"latency_ms":123,"http_code":"204","udp":"ok"}'
+check p14-stopped "$(cat "$CURL_N")" "2"
+
+# 15. a warm fetch failing midway keeps the samples taken so far
+cat >"$TMP/bin/curl" <<'EOF'
+#!/bin/sh
+n=$(cat "$CURL_N" 2>/dev/null || echo 0)
+n=$((n + 1)); echo "$n" >"$CURL_N"
+case "$n" in
+	1) echo '204 0.123' ;;
+	2) echo '204 0.060' ;;
+	3) echo '503 0.010' ;;
+	*) echo '204 0.001' ;;
+esac
+exit 0
+EOF
+chmod +x "$TMP/bin/curl"
+reset_curl; check p15-warm-partial "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
+	TW_SINGBOX_BIN=sing-box TW_CURL_BIN=curl \
+	PATH="$TMP/bin:$PATH" sh "$PROBE" 'p1' 'Someone' 2>/dev/null)" \
+	'{"tag":"Someone","ok":true,"latency_ms":123,"warm_latency_ms":60,"http_code":"204","udp":"ok"}'
+check p15-stopped "$(cat "$CURL_N")" "3"
+
+# 16. an even sample count reports the upper middle (60/45 -> 60)
+install_ok_curl
+reset_curl; check p16-warm-even "$(TW_SB_DIR="$TMP/sb" TW_SUBIMPORT="$IMPORT_BIN" \
+	TW_SINGBOX_BIN=sing-box TW_CURL_BIN=curl TW_PROBE_WARM_RUNS=2 \
+	PATH="$TMP/bin:$PATH" sh "$PROBE" 'p1' 'Someone' 2>/dev/null)" \
+	'{"tag":"Someone","ok":true,"latency_ms":123,"warm_latency_ms":60,"http_code":"204","udp":"ok"}'
 
 echo "PASS: probe ($PASS assertions)"
