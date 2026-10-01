@@ -190,30 +190,46 @@ tile shows live status (green/amber/red dot + one-line preview):
 
 ## Build
 
-### Option A — Docker on Mac: SDK + ImageBuilder (fast, no toolchain build)
+### Option A — Docker on Mac: cached SDK + offline ImageBuilder
 
 Our two packages are script-only, so instead of building the whole toolchain,
 compile just them with the prebuilt SDK, then assemble the MT3000 image with
 the prebuilt ImageBuilder. Both run as `linux/amd64` containers (emulated on
-Apple Silicon, but packaging-only work so still quick).
+Apple Silicon). Their large `/builder` workspaces live in named Docker volumes,
+so Docker does not copy and discard several GB on every invocation.
+
+The workflow deliberately separates network access from normal iteration:
 
 ```sh
-./travelwizard/build.sh            # or: REL=v25.12.5 ./travelwizard/build.sh
+./travelwizard/build.sh prepare    # once, online: resolve/download/lock APKs
+./travelwizard/build.sh            # thereafter, completely offline
+# To update a release image intentionally:
+PULL=1 ./travelwizard/build.sh prepare
 # -> travelwizard/build/image/*-sysupgrade.bin
 # -> travelwizard/build/ipk/*.apk
 ```
 
 Notes:
 
-- The script mounts `feed/` into the SDK at `/builder/package/` and drops the
-  resulting `.apk` files into the ImageBuilder's `packages/` dir (re-indexed
-  automatically). All other packages are fetched from `downloads.openwrt.org`.
+- `prepare` is the only networked phase. It downloads the complete transitive
+  APK closure into a local ImageBuilder repository, records every APK SHA-256,
+  then proves that the same manifest resolves with Docker networking disabled.
+- A normal build runs both the SDK and ImageBuilder with `--network none`. It
+  removes stale local APK releases, rebuilds whichever of the two packages
+  changed, and replaces only those APKs in the prepared repository.
+- ImageBuilder still performs its normal clean rootfs install, all staged
+  post-install scripts, service enablement, SquashFS generation, metadata and
+  checksums. We intentionally do not patch a previously compressed image.
+- After assembly, the script compares every file from both local packages with
+  the finalized image root, checks their exact versions in the image manifest,
+  and checks that both TravelWizard init services were enabled. The output also
+  includes the manifest, SBOM, dependency lock and build provenance.
+- The cache key includes the OpenWrt release, profile, ImageBuilder image ID,
+  requested package set and both local packages' dependency declarations. A
+  relevant change fails closed and asks for another explicit `prepare`.
 - Release 25.x uses `.apk` packages; base system comes from the release tag,
   not this tree — fine, since our packages only rely on stable interfaces
   (UCI, firewall4 zones, netifd).
-- Validate the package set without building (fast, catches typos) with
-  `make manifest PROFILE="glinet_gl-mt3000" PACKAGES="<list from build.sh>"`
-  inside the ImageBuilder container.
 - Verified 2026-09-22 with `v25.12.5`: manifest resolves all names, image
   builds (~24 MB, vs ~9.5 MB stock — almost all of it sing-box), and the
   assembled rootfs contains all `tw-*` helpers, the `90-travelwizard` and
